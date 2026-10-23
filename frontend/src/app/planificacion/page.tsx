@@ -6,7 +6,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import EstadoFlota from "../../components/EstadoFlota";
-import EscenarioPrecios from "@/components/EscenarioPrecios";
+import ResultadoPlanificacion from "@/components/ResultadoPlanificacion";
 
 function fechaLocal(fecha: Date) {
   return (
@@ -208,8 +208,9 @@ export default function PlanificacionPage() {
               Planificación preparada
             </h2>
 
+              
                 {planPreparado && semanaFutura && (
-                <EscenarioPrecios semana={semanaEscenario} />
+                  <ResultadoPlanificacion semana={semanaEscenario} />
                 )}
 
             <p className="mt-3 leading-7 text-gray-500">

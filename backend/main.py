@@ -350,3 +350,45 @@ def obtener_ocupacion_cargadores(
 from backend.escenarios import router as escenarios_router
 
 app.include_router(escenarios_router)
+# FLOTIQ | CONSULTAR PLANIFICACIONES FUTURAS
+
+import json
+from datetime import date
+
+
+@app.get("/api/planificaciones/{semana}/resumen")
+def obtener_resumen_planificacion(semana: date):
+
+    if semana.weekday() != 0:
+        raise HTTPException(
+            status_code=400,
+            detail="La semana debe comenzar en lunes.",
+        )
+
+    ruta = (
+        PROJECT_ROOT
+        / "data"
+        / "processed"
+        / f"planificacion_{semana.isoformat()}_resumen.json"
+    )
+
+    if not ruta.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Esta semana todavía no tiene una planificación "
+                "generada."
+            ),
+        )
+
+    try:
+        with ruta.open("r", encoding="utf-8") as archivo:
+            resultado = json.load(archivo)
+
+        return resultado
+
+    except (OSError, json.JSONDecodeError) as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo leer la planificación: {error}",
+        )
