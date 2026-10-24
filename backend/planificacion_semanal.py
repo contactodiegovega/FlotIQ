@@ -272,7 +272,7 @@ def generar_planificacion_semanal(
 
     resumen = {
         "tipo_datos": "planificacion_simulada_futura",
-        "metodo_precios": "escenario_historico_central",
+        "metodo_precios": "mediana_historica_estacional_21_dias",
         "semana_inicio": fecha_inicio,
         "vehiculos": len(vehiculos),
         "horas": 168,

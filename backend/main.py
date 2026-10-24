@@ -14,7 +14,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET","POST"],
     allow_headers=["*"],
 )
 
@@ -392,3 +392,187 @@ def obtener_resumen_planificacion(semana: date):
             status_code=500,
             detail=f"No se pudo leer la planificación: {error}",
         )
+
+# FLOTIQ | GENERACION AUTOMATICA DE PLANIFICACIONES
+
+from datetime import date, timedelta
+from pathlib import Path
+from threading import Lock
+
+from fastapi import BackgroundTasks, HTTPException
+from pydantic import BaseModel
+
+from backend.planificacion_semanal import generar_planificacion_semanal
+
+
+class SolicitudPlanificacion(BaseModel):
+    semana: date
+
+
+# Estados de ejecución del servidor local.
+_planificaciones_en_curso = set()
+_errores_planificacion = {}
+_bloqueo_planificaciones = Lock()
+
+
+def _ruta_resumen(semana: str) -> Path:
+    return (
+        PROJECT_ROOT
+        / "data"
+        / "processed"
+        / f"planificacion_{semana}_resumen.json"
+    )
+
+
+def _ejecutar_planificacion(semana: str):
+    try:
+        print(
+            f"FLOTIQ | Iniciando planificación {semana}",
+            flush=True,
+        )
+
+        # Motor semanal que ya validamos con noviembre.
+        generar_planificacion_semanal(semana)
+
+        if not _ruta_resumen(semana).exists():
+            raise RuntimeError(
+                "El optimizador terminó, pero no generó "
+                "el resumen de planificación."
+            )
+
+        print(
+            f"FLOTIQ | Planificación completada: {semana}",
+            flush=True,
+        )
+
+    except Exception as error:
+        with _bloqueo_planificaciones:
+            _errores_planificacion[semana] = str(error)
+
+        print(
+            f"FLOTIQ | Error planificando {semana}: {error}",
+            flush=True,
+        )
+
+    finally:
+        with _bloqueo_planificaciones:
+            _planificaciones_en_curso.discard(semana)
+
+
+@app.post("/api/planificaciones/generar", status_code=202)
+def solicitar_planificacion(
+    solicitud: SolicitudPlanificacion,
+    tareas: BackgroundTasks,
+):
+    fecha = solicitud.semana
+
+    if fecha.weekday() != 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Selecciona el lunes de la semana.",
+        )
+
+    # De momento, solo semanas futuras.
+    hoy = date.today()
+    lunes_actual = hoy - timedelta(days=hoy.weekday())
+
+    if fecha < lunes_actual:
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se pueden generar semanas actuales o futuras.",
+        )
+
+    # El motor operativo todavía no admite cambios de hora.
+    inicio = pd.Timestamp(fecha).tz_localize(
+        "Europe/Madrid"
+    )
+
+    fin = pd.Timestamp(
+        fecha + timedelta(days=7)
+    ).tz_localize("Europe/Madrid")
+
+    horas_semana = len(
+        pd.date_range(
+            inicio,
+            fin,
+            freq="h",
+            inclusive="left",
+        )
+    )
+
+    if horas_semana != 168:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Las semanas con cambio horario todavía "
+                "no son compatibles con este optimizador."
+            ),
+        )
+
+    semana = fecha.isoformat()
+
+    with _bloqueo_planificaciones:
+        if _ruta_resumen(semana).exists():
+            return {
+                "semana": semana,
+                "estado": "completada",
+                "mensaje": "La planificación ya existe.",
+            }
+
+        if semana in _planificaciones_en_curso:
+            return {
+                "semana": semana,
+                "estado": "ejecutando",
+                "mensaje": "La planificación está en proceso.",
+            }
+
+        if _planificaciones_en_curso:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Ya se está calculando otra semana. "
+                    "Espera a que termine."
+                ),
+            )
+
+        _errores_planificacion.pop(semana, None)
+        _planificaciones_en_curso.add(semana)
+
+    tareas.add_task(_ejecutar_planificacion, semana)
+
+    return {
+        "semana": semana,
+        "estado": "ejecutando",
+        "mensaje": "Optimización semanal iniciada.",
+    }
+
+
+@app.get("/api/planificaciones/{semana}/estado")
+def consultar_estado_planificacion(semana: date):
+    if semana.weekday() != 0:
+        raise HTTPException(
+            status_code=400,
+            detail="La semana debe comenzar en lunes.",
+        )
+
+    clave = semana.isoformat()
+
+    with _bloqueo_planificaciones:
+        if clave in _planificaciones_en_curso:
+            estado = "ejecutando"
+            error = None
+        elif clave in _errores_planificacion:
+            estado = "error"
+            error = _errores_planificacion[clave]
+        elif _ruta_resumen(clave).exists():
+            estado = "completada"
+            error = None
+        else:
+            estado = "pendiente"
+            error = None
+
+    return {
+        "semana": clave,
+        "estado": estado,
+        "error": error,
+    }
