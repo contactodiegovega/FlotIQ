@@ -1,116 +1,78 @@
 # FlotIQ
 
-**Intelligent Electric Fleet Management**
+**Predicción de precios eléctricos y optimización de recargas para flotas de vehículos eléctricos.**
 
-FlotIQ es un proyecto de ciencia de datos orientado a la gestión energética y operativa de una flota de vehículos eléctricos destinada a servicios de transporte VTC.
+Proyecto final del Bootcamp de Data Science de Upgrade Hub.
 
-El objetivo es desarrollar una plataforma capaz de anticipar los costes energéticos, planificar recargas y facilitar la asignación de vehículos y conductores, manteniendo la disponibilidad operativa de la flota.
+## Descripción
 
-## 1. Caso de uso
+FlotIQ es una aplicación web que utiliza Machine Learning para predecir los precios de la electricidad y optimizar las recargas de una flota VTC en Madrid.
 
-El proyecto plantea un escenario empresarial de demostración con:
+El proyecto trabaja con un escenario simulado de **50 vehículos eléctricos, 80 conductores y 20 cargadores**, con una potencia máxima conjunta de 150 kW.
 
-- 50 vehículos eléctricos.
-- 80 conductores registrados.
-- 20 puntos de carga AC de 11 kW.
-- Una potencia máxima simultánea de 150 kW.
-- Un horizonte de planificación de 24 horas.
+## Tecnologías
 
-Estos parámetros constituyen hipótesis iniciales de diseño y podrán ajustarse tras el análisis de los datos.
+- **Python, Pandas y PostgreSQL:** procesamiento y almacenamiento de datos.
+- **Scikit-learn:** predicción de precios mediante HistGradientBoostingRegressor.
+- **PuLP:** optimización de recargas.
+- **FastAPI:** backend y API REST.
+- **Next.js, React y TypeScript:** aplicación web.
 
-## 2. Objetivos
+## Datos y Machine Learning
 
-- Obtener y analizar datos reales de precios eléctricos, movilidad y recarga.
-- Construir un pipeline ETL reproducible.
-- Diseñar una base de datos relacional en PostgreSQL.
-- Desarrollar un modelo predictivo de precios eléctricos.
-- Optimizar la planificación de recargas respetando restricciones operativas.
-- Gestionar vehículos, conductores, turnos y servicios.
-- Desarrollar una aplicación web con Next.js y React.
-- Crear un dashboard de análisis empresarial en Power BI.
+Se utilizan precios históricos de **OMIE** y datos operativos para analizar patrones de consumo y disponibilidad.
 
-## 3. Tecnologías previstas
+El proceso incluye limpieza de datos, análisis exploratorio (EDA) y predicción horaria de precios para los próximos dos días.
 
-**Datos:** Python, Pandas, NumPy, Requests y PyArrow.
+El modelo utiliza variables temporales y precios históricos de 72 y 168 horas anteriores.
 
-**Base de datos:** PostgreSQL, SQLAlchemy y Psycopg.
+En la evaluación realizada, el modelo ML obtuvo un MAE aproximado de **38,68 €/MWh**, frente a **27,66 €/MWh** del baseline semanal. Esta limitación se tiene en cuenta al interpretar los resultados.
 
-**Machine Learning y optimización:** Scikit-learn y SciPy.
+## Funcionalidades
 
-**Backend:** FastAPI.
+- Predicción de precios eléctricos para 48 horas.
+- Optimización de recargas según costes y restricciones operativas.
+- Visualización de vehículos, turnos y conductores estimados.
+- Consulta de disponibilidad y asignación propuesta de cargadores.
+- Dashboard con indicadores económicos y energéticos.
+- Actualización de datos y generación de planificaciones mediante un pipeline Python.
 
-**Frontend:** Next.js y React.
+Los turnos, las baterías y las operaciones futuras son simulaciones. Los costes mostrados son estimaciones, no ahorros reales demostrados.
 
-**Business Intelligence:** Power BI.
+## Instalación
 
-**Desarrollo:** VS Code, Git y GitHub.
-
-## 4. Metodología
-
-El proyecto se organiza en cinco fases:
-
-1. **Adquisición de datos:** investigación de fuentes, descarga de datasets y APIs, y generación documentada de datos sintéticos cuando sea necesario.
-2. **ETL y análisis:** limpieza, transformación, integración, almacenamiento SQL y análisis exploratorio.
-3. **Machine Learning y optimización:** predicción de precios, estimación de necesidades energéticas y planificación de recargas.
-4. **Desarrollo web:** aplicación operativa para gestionar flota, conductores y recargas.
-5. **Power BI:** dashboard de seguimiento energético, económico y operativo.
-
-## 5. Fuentes de datos previstas
-
-Se evaluarán fuentes como:
-
-- OMIE: precios del mercado eléctrico.
-- Ayuntamiento de Madrid: datos públicos de taxi y movilidad.
-- ACN-Data: registros históricos de sesiones de recarga.
-- Open-Meteo: datos y previsiones meteorológicas.
-
-La accesibilidad, cobertura, licencia y calidad de cada fuente se verificarán durante la primera fase.
-
-Los datos simulados se identificarán expresamente y no se presentarán como observaciones reales.
-
-## 6. Estructura del repositorio
-
-- `data/`: datos originales, procesados y muestras.
-- `notebooks/`: exploración y experimentación.
-- `src/flotiq/`: código Python reutilizable.
-- `database/`: esquemas y consultas SQL.
-- `api/`: backend FastAPI.
-- `web/`: aplicación Next.js.
-- `powerbi/`: informes de Business Intelligence.
-- `models/`: modelos y artefactos generados.
-- `tests/`: pruebas automatizadas.
-- `docs/`: documentación técnica.
-
-## 7. Instalación del entorno Python
-
-Requisitos: Python y Git. Las versiones compatibles se concretarán y documentarán durante la preparación del entorno.
-
-Crear y activar el entorno virtual en Windows:
+**Backend**, desde la raíz del proyecto:
 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m uvicorn backend.main:app --reload
 ```
 
-Instalar dependencias:
+**Frontend**, en otra terminal:
 
 ```powershell
-python -m pip install -r requirements.txt
+cd frontend
+npm ci
+npm run dev
 ```
 
-## 8. Estado del proyecto
+Abrir la aplicación en `http://localhost:3000/dashboard`.
 
-**Fase 0 — Preparación del repositorio.**
+La ejecución completa requiere los datos procesados, el modelo entrenado y la configuración de PostgreSQL para las funciones que consultan conductores.
 
-La obtención de datos, el desarrollo de modelos y la aplicación web todavía no han comenzado.
+## Estructura
 
-## 9. Limitaciones iniciales
+- `backend/`: API, predicción y optimización.
+- `frontend/`: aplicación web.
+- `data/`: datos históricos y procesados.
+- `notebooks/`: EDA y experimentación.
+- `models/`: modelo entrenado.
+- `database/`: base de datos.
 
-- No se dispone de registros internos reales de una empresa VTC.
-- La disponibilidad de datasets y APIs debe validarse.
-- Los costes se estimarán utilizando un escenario contractual documentado; el precio mayorista no equivale directamente al coste final facturado.
-- La optimización de rutas en tiempo real queda fuera del alcance inicial.
+## Limitaciones
 
-## 10. Próximos pasos
+FlotIQ es un prototipo funcional basado en datos históricos y escenarios simulados. No dispone de telemetría ni turnos futuros confirmados, y el precio mayorista de OMIE no representa necesariamente el precio final facturado.
 
-Finalizar la configuración del repositorio, validar las fuentes de datos y comenzar el pipeline de adquisición.
+La aplicación se ejecuta en entorno local.

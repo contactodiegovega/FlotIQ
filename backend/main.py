@@ -586,3 +586,6 @@ app.include_router(api_48h_router)
 from backend.conductores_48h import router as conductores_router
 
 app.include_router(conductores_router)
+from backend.api_escenarios import router as escenarios_router
+
+app.include_router(escenarios_router)
