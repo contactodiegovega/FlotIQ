@@ -576,3 +576,13 @@ def consultar_estado_planificacion(semana: date):
         "estado": estado,
         "error": error,
     }
+# FLOTIQ | API DE PLANIFICACIONES A 48 HORAS
+
+from backend.api_48h import router as api_48h_router
+
+app.include_router(api_48h_router)
+# FLOTIQ | API DE CONDUCTORES
+
+from backend.conductores_48h import router as conductores_router
+
+app.include_router(conductores_router)

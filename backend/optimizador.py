@@ -1,4 +1,5 @@
-# FLOTIQ | OPTIMIZADOR REUTILIZABLE DE RECARGAS
+
+# FLOTIQ | OPTIMIZADOR CON RESERVA INTERMEDIA
 
 import numpy as np
 import pandas as pd
@@ -17,98 +18,167 @@ INTERVALO_HORAS = 1.0
 TOLERANCIA = 0.002
 
 
-
 def optimizar_recargas(
     datos_operativos: pd.DataFrame,
     precios_horarios: pd.DataFrame,
     energia_final_objetivo: dict,
     tiempo_maximo_segundos: int = 180,
     energia_inicial_vehiculos: dict | None = None,
+    objetivo_final_flexible: bool = False,
+    penalizacion_deficit_eur_kwh: float = 1.0,
+    indice_fin_primer_dia: int | None = None,
+    soc_objetivo_intermedio: float = 0.40,
+    penalizacion_intermedia_eur_kwh: float = 2.0,
 ):
-    """Optimiza la recarga de la flota con PuLP 4.x y CBC.
 
-    Requiere operaciones con vehicle_id, hora, disponible_carga y
-    energia_consumida_kwh; precios con hora y price_eur_mwh.
-    Los intervalos son de una hora. Los costes son estimados y se
-    calculan a partir del escenario de precios suministrado.
-    """
-    
+    # Preparar las tablas
+
     datos = datos_operativos.copy()
     precios = precios_horarios.copy()
 
     columnas_operativas = {
-        "vehicle_id", "hora", "energia_consumida_kwh", "disponible_carga"
+        'vehicle_id',
+        'hora',
+        'energia_consumida_kwh',
+        'disponible_carga',
     }
-    columnas_precios = {"hora", "price_eur_mwh"}
+
+    columnas_precios = {
+        'hora',
+        'price_eur_mwh',
+    }
+
+    if datos.empty or precios.empty:
+        raise ValueError('No hay operaciones o precios.')
 
     if not columnas_operativas.issubset(datos.columns):
-        faltan = columnas_operativas - set(datos.columns)
-        raise ValueError(f"Faltan columnas operativas: {sorted(faltan)}")
+        raise ValueError('Faltan columnas operativas.')
+
     if not columnas_precios.issubset(precios.columns):
-        faltan = columnas_precios - set(precios.columns)
-        raise ValueError(f"Faltan columnas de precios: {sorted(faltan)}")
-    if datos.empty or precios.empty:
-        raise ValueError("No hay operaciones o precios para optimizar.")
+        raise ValueError('Faltan columnas de precios.')
 
-    datos["hora"] = pd.to_datetime(datos["hora"])
-    precios["hora"] = pd.to_datetime(precios["hora"])
-    if datos["hora"].isna().any() or precios["hora"].isna().any():
-        raise ValueError("Hay fechas horarias vacías o incorrectas.")
-
-    # Trabajamos con la misma referencia temporal en las dos tablas.
-    zona_datos = datos["hora"].dt.tz
-    zona_precios = precios["hora"].dt.tz
-    if (zona_datos is None) != (zona_precios is None):
-        raise ValueError("Operaciones y precios deben usar la misma zona horaria.")
-    if zona_datos is not None:
-        datos["hora"] = datos["hora"].dt.tz_convert("UTC").dt.tz_localize(None)
-        precios["hora"] = precios["hora"].dt.tz_convert("UTC").dt.tz_localize(None)
-
-    if datos["vehicle_id"].isna().any():
-        raise ValueError("Hay vehículos sin identificador.")
-    if datos.duplicated(["vehicle_id", "hora"]).any():
-        raise ValueError("Hay operaciones duplicadas por vehículo y hora.")
-    if precios["hora"].duplicated().any():
-        raise ValueError("Hay precios horarios duplicados.")
-
-    datos["energia_consumida_kwh"] = pd.to_numeric(
-        datos["energia_consumida_kwh"], errors="coerce"
+    datos['hora'] = pd.to_datetime(
+        datos['hora'],
+        utc=True,
     )
-    precios["price_eur_mwh"] = pd.to_numeric(
-        precios["price_eur_mwh"], errors="coerce"
-    )
-    if not np.isfinite(datos["energia_consumida_kwh"].to_numpy()).all():
-        raise ValueError("Hay consumos vacíos o no numéricos.")
-    if (datos["energia_consumida_kwh"] < 0).any():
-        raise ValueError("Hay consumos negativos.")
-    if not np.isfinite(precios["price_eur_mwh"].to_numpy()).all():
-        raise ValueError("Hay precios vacíos o no numéricos.")
-    if datos["disponible_carga"].isna().any():
-        raise ValueError("Hay disponibilidades sin informar.")
-    if not pd.api.types.is_bool_dtype(datos["disponible_carga"]):
-        raise ValueError("disponible_carga debe ser booleana (True/False).")
 
-    precios = precios.sort_values("hora").reset_index(drop=True)
-    horas = precios["hora"].tolist()
-    if len(horas) > 1 and not (
-        precios["hora"].diff().iloc[1:] == pd.Timedelta(hours=1)
+    precios['hora'] = pd.to_datetime(
+        precios['hora'],
+        utc=True,
+    )
+
+    if (
+        datos['hora'].isna().any()
+        or precios['hora'].isna().any()
+    ):
+        raise ValueError('Hay horas vacias.')
+
+    # Normalizar internamente a UTC
+
+    datos['hora'] = (
+        datos['hora'].dt.tz_localize(None)
+    )
+
+    precios['hora'] = (
+        precios['hora'].dt.tz_localize(None)
+    )
+
+    if datos['vehicle_id'].isna().any():
+        raise ValueError('Existen vehiculos sin identificador.')
+
+    if datos.duplicated(['vehicle_id', 'hora']).any():
+        raise ValueError('Hay operaciones duplicadas.')
+
+    if precios['hora'].duplicated().any():
+        raise ValueError('Hay precios duplicados.')
+
+    datos['energia_consumida_kwh'] = pd.to_numeric(
+        datos['energia_consumida_kwh'],
+        errors='coerce',
+    )
+
+    precios['price_eur_mwh'] = pd.to_numeric(
+        precios['price_eur_mwh'],
+        errors='coerce',
+    )
+
+    if not np.isfinite(
+        datos['energia_consumida_kwh'].to_numpy()
     ).all():
-        raise ValueError("Los precios deben tener intervalos horarios consecutivos.")
+        raise ValueError('Consumos no numericos.')
 
-    vehiculos = sorted(datos["vehicle_id"].unique().tolist())
+    if (datos['energia_consumida_kwh'] < 0).any():
+        raise ValueError('Consumos negativos.')
+
+    if not np.isfinite(
+        precios['price_eur_mwh'].to_numpy()
+    ).all():
+        raise ValueError('Precios no numericos.')
+
+    if datos['disponible_carga'].isna().any():
+        raise ValueError('Disponibilidad incompleta.')
+
+    if not pd.api.types.is_bool_dtype(
+        datos['disponible_carga']
+    ):
+        raise ValueError(
+            'disponible_carga debe ser booleana.'
+        )
+
+    # Ordenar precios y comprobar continuidad
+
+    precios = (
+        precios.sort_values('hora')
+        .reset_index(drop=True)
+    )
+
+    horas = precios['hora'].tolist()
+
+    if len(horas) > 1 and not (
+        precios['hora'].diff().iloc[1:]
+        == pd.Timedelta(hours=1)
+    ).all():
+        raise ValueError(
+            'El horizonte no tiene horas consecutivas.'
+        )
+
+    vehiculos = sorted(
+        datos['vehicle_id'].unique().tolist()
+    )
+
     if set(energia_final_objetivo) != set(vehiculos):
-        raise ValueError("Faltan objetivos finales de batería por vehículo.")
+        raise ValueError(
+            'Faltan objetivos finales por vehiculo.'
+        )
+
     if len(datos) != len(vehiculos) * len(horas):
-        raise ValueError("La matriz vehículo-hora está incompleta.")
-    if set(datos["hora"]) != set(horas):
-        raise ValueError("Las horas de operaciones y precios no coinciden.")
+        raise ValueError(
+            'La matriz vehiculo-hora esta incompleta.'
+        )
 
-    datos_idx = datos.set_index(["vehicle_id", "hora"])
-    precios_idx = precios.set_index("hora")["price_eur_mwh"]
+    if set(datos['hora']) != set(horas):
+        raise ValueError(
+            'Las horas de precios y operaciones no coinciden.'
+        )
 
-    energia_min = CAPACIDAD_BATERIA_KWH * SOC_MINIMO
-    energia_max = CAPACIDAD_BATERIA_KWH * SOC_OBJETIVO
-    # Estado inicial de cada vehículo: permite continuidad entre días.
+    datos_idx = datos.set_index(
+        ['vehicle_id', 'hora']
+    )
+
+    precios_idx = precios.set_index(
+        'hora'
+    )['price_eur_mwh']
+
+    energia_min = (
+        CAPACIDAD_BATERIA_KWH * SOC_MINIMO
+    )
+
+    energia_max = (
+        CAPACIDAD_BATERIA_KWH * SOC_OBJETIVO
+    )
+
+    # Estados iniciales y objetivos
+
     if energia_inicial_vehiculos is None:
         energia_inicial_vehiculos = {
             v: CAPACIDAD_BATERIA_KWH * SOC_INICIAL
@@ -116,150 +186,501 @@ def optimizar_recargas(
         }
 
     if set(energia_inicial_vehiculos) != set(vehiculos):
-        raise ValueError("Faltan estados iniciales de batería por vehículo.")
+        raise ValueError(
+            'Faltan estados iniciales de bateria.'
+        )
 
     iniciales = {}
-    for vehiculo in vehiculos:
-        try:
-            inicial = float(energia_inicial_vehiculos[vehiculo])
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Batería inicial no numérica para {vehiculo}."
-            ) from error
-        if not np.isfinite(inicial) or not energia_min <= inicial <= energia_max:
-            raise ValueError(f"Batería inicial fuera de límites: {vehiculo}.")
-        iniciales[vehiculo] = inicial
-
     objetivos = {}
-    for vehiculo in vehiculos:
-        objetivo = float(energia_final_objetivo[vehiculo])
-        if not np.isfinite(objetivo) or not energia_min <= objetivo <= energia_max:
-            raise ValueError(f"Objetivo final de batería inválido: {vehiculo}")
-        objetivos[vehiculo] = objetivo
+
+    for v in vehiculos:
+
+        inicial = float(
+            energia_inicial_vehiculos[v]
+        )
+
+        objetivo = float(
+            energia_final_objetivo[v]
+        )
+
+        if (
+            not np.isfinite(inicial)
+            or not energia_min <= inicial <= energia_max
+        ):
+            raise ValueError(
+                f'Bateria inicial invalida: {v}'
+            )
+
+        if (
+            not np.isfinite(objetivo)
+            or not energia_min <= objetivo <= energia_max
+        ):
+            raise ValueError(
+                f'Objetivo final invalido: {v}'
+            )
+
+        iniciales[v] = inicial
+        objetivos[v] = objetivo
+
+    # Validar parametros flexibles
+
+    if objetivo_final_flexible:
+
+        if (
+            not np.isfinite(penalizacion_deficit_eur_kwh)
+            or penalizacion_deficit_eur_kwh <= 0
+        ):
+            raise ValueError(
+                'Penalizacion final invalida.'
+            )
+
+    if indice_fin_primer_dia is not None:
+
+        if (
+            type(indice_fin_primer_dia) is not int
+            or not 0 <= indice_fin_primer_dia < len(horas) - 1
+        ):
+            raise ValueError(
+                'Indice intermedio fuera de rango.'
+            )
+
+        if not (
+            SOC_MINIMO
+            <= soc_objetivo_intermedio
+            <= SOC_OBJETIVO
+        ):
+            raise ValueError(
+                'SOC intermedio fuera de limites.'
+            )
+
+        if (
+            not np.isfinite(penalizacion_intermedia_eur_kwh)
+            or penalizacion_intermedia_eur_kwh <= 0
+        ):
+            raise ValueError(
+                'Penalizacion intermedia invalida.'
+            )
+
+    # Crear modelo matematico
 
     periodos = range(len(horas))
-    indices = [(v, t) for v in vehiculos for t in periodos]
-    modelo = pulp.LpProblem("FlotIQ_Recargas", pulp.LpMinimize)
 
-    # En PuLP 4.x las variables se crean mediante el propio modelo.
-    carga = modelo.add_variable_dicts("carga_red", indices, lowBound=0)
-    conexion = modelo.add_variable_dicts("conexion", indices, cat="Binary")
-    bateria = modelo.add_variable_dicts(
-        "bateria", indices, lowBound=energia_min, upBound=energia_max
+    indices = [
+        (v, t)
+        for v in vehiculos
+        for t in periodos
+    ]
+
+    modelo = pulp.LpProblem(
+        'FlotIQ_Recargas',
+        pulp.LpMinimize,
     )
 
-    modelo += pulp.lpSum(
-        carga[v, t] * float(precios_idx.loc[horas[t]]) / 1000
+    carga = modelo.add_variable_dicts(
+        'carga_red',
+        indices,
+        lowBound=0,
+    )
+
+    conexion = modelo.add_variable_dicts(
+        'conexion',
+        indices,
+        cat='Binary',
+    )
+
+    bateria = modelo.add_variable_dicts(
+        'bateria',
+        indices,
+        lowBound=energia_min,
+        upBound=energia_max,
+    )
+
+    # Funcion objetivo: coste de electricidad
+
+    funcion_objetivo = pulp.lpSum(
+        carga[v, t]
+        * float(precios_idx.loc[horas[t]])
+        / 1000
         for v, t in indices
     )
 
+    deficit_final = None
+    deficit_intermedio = None
+
+    objetivo_intermedio_kwh = (
+        CAPACIDAD_BATERIA_KWH
+        * soc_objetivo_intermedio
+    )
+
+    # Penalizacion por no alcanzar el objetivo final
+
+    if objetivo_final_flexible:
+
+        deficit_final = modelo.add_variable_dicts(
+            'deficit_final',
+            vehiculos,
+            lowBound=0,
+        )
+
+        funcion_objetivo += (
+            penalizacion_deficit_eur_kwh
+            * pulp.lpSum(
+                deficit_final[v]
+                for v in vehiculos
+            )
+        )
+
+    # Nueva penalizacion por reserva intermedia
+
+    if indice_fin_primer_dia is not None:
+
+        deficit_intermedio = modelo.add_variable_dicts(
+            'deficit_intermedio',
+            vehiculos,
+            lowBound=0,
+        )
+
+        funcion_objetivo += (
+            penalizacion_intermedia_eur_kwh
+            * pulp.lpSum(
+                deficit_intermedio[v]
+                for v in vehiculos
+            )
+        )
+
+    modelo += funcion_objetivo
+
+    # Restricciones de cada vehiculo
+
     for v in vehiculos:
+
         for t in periodos:
-            fila = datos_idx.loc[(v, horas[t])]
-            consumo = float(fila["energia_consumida_kwh"])
-            disponible = bool(fila["disponible_carga"])
+
+            fila = datos_idx.loc[
+                (v, horas[t])
+            ]
+
+            consumo = float(
+                fila['energia_consumida_kwh']
+            )
+
+            disponible = bool(
+                fila['disponible_carga']
+            )
 
             if not disponible:
                 modelo += conexion[v, t] == 0
+
             modelo += (
                 carga[v, t]
-                <= POTENCIA_CARGADOR_KW * INTERVALO_HORAS * conexion[v, t]
+                <= POTENCIA_CARGADOR_KW
+                * INTERVALO_HORAS
+                * conexion[v, t]
             )
-            anterior = iniciales[v] if t == 0 else bateria[v, t - 1]
+
+            anterior = (
+                iniciales[v]
+                if t == 0
+                else bateria[v, t - 1]
+            )
+
             modelo += (
                 bateria[v, t]
-                == anterior - consumo + carga[v, t] * EFICIENCIA_CARGA
+                == anterior
+                - consumo
+                + carga[v, t] * EFICIENCIA_CARGA
             )
 
-        modelo += bateria[v, len(horas) - 1] == objetivos[v]
+        # Objetivo al final de las 48 horas
+
+        if objetivo_final_flexible:
+
+            modelo += (
+                bateria[v, len(horas) - 1]
+                + deficit_final[v]
+                >= objetivos[v]
+            )
+
+        else:
+
+            modelo += (
+                bateria[v, len(horas) - 1]
+                == objetivos[v]
+            )
+
+        # Reserva al finalizar el primer dia
+
+        if indice_fin_primer_dia is not None:
+
+            modelo += (
+                bateria[v, indice_fin_primer_dia]
+                + deficit_intermedio[v]
+                >= objetivo_intermedio_kwh
+            )
+
+    # Restricciones compartidas de la instalacion
 
     for t in periodos:
-        modelo += pulp.lpSum(conexion[v, t] for v in vehiculos) <= NUM_CARGADORES
-        modelo += pulp.lpSum(carga[v, t] for v in vehiculos) <= (
-            POTENCIA_MAX_INSTALACION_KW * INTERVALO_HORAS
+
+        modelo += (
+            pulp.lpSum(
+                conexion[v, t]
+                for v in vehiculos
+            )
+            <= NUM_CARGADORES
         )
 
-    # En PuLP 4.x solve() devuelve LpSolveStats, no un entero.
-    solver = pulp.COIN_CMD(msg=False, timeLimit=tiempo_maximo_segundos)
+        modelo += (
+            pulp.lpSum(
+                carga[v, t]
+                for v in vehiculos
+            )
+            <= POTENCIA_MAX_INSTALACION_KW
+            * INTERVALO_HORAS
+        )
+
+    # Ejecutar CBC
+
+    solver = pulp.COIN_CMD(
+        msg=False,
+        timeLimit=tiempo_maximo_segundos,
+    )
+
     estadisticas = modelo.solve(solver)
     estado = estadisticas.status_str
 
-    if not estadisticas.has_solution:
+    if (
+        not estadisticas.has_solution
+        or estado in {'Infeasible', 'Unbounded'}
+    ):
         raise RuntimeError(
-            f"CBC no devolvió una solución utilizable (estado: {estado}). "
-            "Revisa la factibilidad o amplía el tiempo del solver."
+            f'No hay solucion factible. Estado CBC: {estado}'
         )
-    if estado in {"Infeasible", "Unbounded"}:
-        raise RuntimeError(f"CBC devolvió el estado {estado}; no se acepta la solución.")
 
-    # Verificación independiente: una solución con GapLimit puede ser factible
-    # sin estar certificada como óptima. Validamos antes de publicarla.
+    # Verificar los resultados de forma independiente
+
     registros = []
-    totales_por_hora = {t: 0.0 for t in periodos}
-    conexiones_por_hora = {t: 0 for t in periodos}
+
+    conexiones_hora = {
+        t: 0
+        for t in periodos
+    }
+
+    carga_hora = {
+        t: 0.0
+        for t in periodos
+    }
+
+    deficit_final_real = 0.0
+    deficit_intermedio_real = 0.0
 
     for v in vehiculos:
+
         anterior = iniciales[v]
+
         for t in periodos:
+
             valores = [
                 pulp.value(carga[v, t]),
                 pulp.value(bateria[v, t]),
                 pulp.value(conexion[v, t]),
             ]
-            if any(valor is None for valor in valores):
-                raise RuntimeError(f"Valores incompletos para {v}, hora {t}.")
-            energia_red, energia_bateria, conectado = map(float, valores)
-            if not all(np.isfinite(x) for x in valores):
-                raise RuntimeError(f"Valores no finitos para {v}, hora {t}.")
-            if abs(conectado - round(conectado)) > TOLERANCIA:
-                raise RuntimeError(f"Conexión no binaria para {v}, hora {t}.")
-            conectado = int(round(conectado))
-            if conectado not in (0, 1):
-                raise RuntimeError(f"Conexión inválida para {v}, hora {t}.")
-            if energia_red < -TOLERANCIA:
-                raise RuntimeError(f"Carga negativa para {v}, hora {t}.")
-            if energia_red > POTENCIA_CARGADOR_KW * INTERVALO_HORAS * conectado + TOLERANCIA:
-                raise RuntimeError(f"Potencia individual excedida para {v}, hora {t}.")
-            if not bool(datos_idx.loc[(v, horas[t]), "disponible_carga"]) and conectado:
-                raise RuntimeError(f"Carga conectada durante turno de {v}, hora {t}.")
-            if not energia_min - TOLERANCIA <= energia_bateria <= energia_max + TOLERANCIA:
-                raise RuntimeError(f"Batería fuera de límites para {v}, hora {t}.")
 
-            consumo = float(datos_idx.loc[(v, horas[t]), "energia_consumida_kwh"])
-            calculada = anterior - consumo + energia_red * EFICIENCIA_CARGA
-            if abs(energia_bateria - calculada) > TOLERANCIA:
-                raise RuntimeError(f"Balance energético incorrecto para {v}, hora {t}.")
+            if any(
+                x is None or not np.isfinite(float(x))
+                for x in valores
+            ):
+                raise RuntimeError(
+                    f'Solucion incompleta: {v}, hora {t}'
+                )
+
+            energia_red, energia_bateria, conectado_real = map(
+                float,
+                valores,
+            )
+
+            conectado = int(
+                round(conectado_real)
+            )
+
+            if (
+                abs(conectado_real - conectado) > TOLERANCIA
+                or conectado not in (0, 1)
+            ):
+                raise RuntimeError(
+                    f'Conexion no binaria: {v}, hora {t}'
+                )
+
+            if (
+                energia_red < -TOLERANCIA
+                or energia_red
+                > POTENCIA_CARGADOR_KW
+                * INTERVALO_HORAS
+                * conectado
+                + TOLERANCIA
+            ):
+                raise RuntimeError(
+                    f'Carga individual incorrecta: {v}, hora {t}'
+                )
+
+            fila = datos_idx.loc[
+                (v, horas[t])
+            ]
+
+            if (
+                not bool(fila['disponible_carga'])
+                and conectado
+            ):
+                raise RuntimeError(
+                    f'Carga fuera de disponibilidad: {v}, hora {t}'
+                )
+
+            if not (
+                energia_min - TOLERANCIA
+                <= energia_bateria
+                <= energia_max + TOLERANCIA
+            ):
+                raise RuntimeError(
+                    f'Bateria fuera de limites: {v}, hora {t}'
+                )
+
+            calculada = (
+                anterior
+                - float(fila['energia_consumida_kwh'])
+                + energia_red * EFICIENCIA_CARGA
+            )
+
+            if abs(
+                calculada - energia_bateria
+            ) > TOLERANCIA:
+                raise RuntimeError(
+                    f'Balance incorrecto: {v}, hora {t}'
+                )
+
             anterior = energia_bateria
-            totales_por_hora[t] += energia_red
-            conexiones_por_hora[t] += conectado
-            precio = float(precios_idx.loc[horas[t]])
+
+            carga_hora[t] += energia_red
+            conexiones_hora[t] += conectado
+
+            precio = float(
+                precios_idx.loc[horas[t]]
+            )
+
             registros.append({
-                "vehicle_id": v,
-                "hora": pd.Timestamp(horas[t]),
-                "recarga_red_kwh": max(energia_red, 0.0),
-                "energia_bateria_kwh": energia_bateria,
-                "conexion": conectado,
-                "soc_pct": energia_bateria / CAPACIDAD_BATERIA_KWH * 100,
-                "coste_estimado_eur": energia_red * precio / 1000,
+                'vehicle_id': v,
+                'hora': pd.Timestamp(horas[t]),
+                'recarga_red_kwh': max(energia_red, 0.0),
+                'energia_bateria_kwh': energia_bateria,
+                'conexion': conectado,
+                'soc_pct': (
+                    energia_bateria
+                    / CAPACIDAD_BATERIA_KWH
+                    * 100
+                ),
+                'coste_estimado_eur': (
+                    energia_red * precio / 1000
+                ),
             })
 
-        if abs(anterior - objetivos[v]) > TOLERANCIA:
-            raise RuntimeError(f"No se cumple el objetivo final del vehículo {v}.")
+            # Comprobar reserva del primer dia
+
+            if t == indice_fin_primer_dia:
+
+                deficit_intermedio_real += max(
+                    0.0,
+                    objetivo_intermedio_kwh - energia_bateria,
+                )
+
+                holgura = pulp.value(
+                    deficit_intermedio[v]
+                )
+
+                if (
+                    holgura is None
+                    or energia_bateria + float(holgura)
+                    < objetivo_intermedio_kwh - TOLERANCIA
+                ):
+                    raise RuntimeError(
+                        f'Reserva intermedia incorrecta: {v}'
+                    )
+
+        # Verificar el objetivo final
+
+        if objetivo_final_flexible:
+
+            holgura = pulp.value(
+                deficit_final[v]
+            )
+
+            if (
+                holgura is None
+                or anterior + float(holgura)
+                < objetivos[v] - TOLERANCIA
+            ):
+                raise RuntimeError(
+                    f'Objetivo final flexible incorrecto: {v}'
+                )
+
+        elif abs(anterior - objetivos[v]) > TOLERANCIA:
+            raise RuntimeError(
+                f'Objetivo final incorrecto: {v}'
+            )
+
+        deficit_final_real += max(
+            0.0,
+            objetivos[v] - anterior,
+        )
+
+    # Comprobar limites globales
 
     for t in periodos:
-        if conexiones_por_hora[t] > NUM_CARGADORES:
-            raise RuntimeError(f"Se superan 20 cargadores en la hora {t}.")
-        if totales_por_hora[t] > POTENCIA_MAX_INSTALACION_KW * INTERVALO_HORAS + TOLERANCIA:
-            raise RuntimeError(f"Se superan 150 kW en la hora {t}.")
+
+        if conexiones_hora[t] > NUM_CARGADORES:
+            raise RuntimeError(
+                f'Cargadores excedidos, hora {t}'
+            )
+
+        if (
+            carga_hora[t]
+            > POTENCIA_MAX_INSTALACION_KW
+            * INTERVALO_HORAS
+            + TOLERANCIA
+        ):
+            raise RuntimeError(
+                f'Potencia excedida, hora {t}'
+            )
+
+    # Devolver resultados
 
     resultado = pd.DataFrame(registros)
+
     return {
-        "estado": estado,
-        "optimalidad_certificada": estado == "Optimal",
-        "factibilidad_validada": True,
-        "vehiculos": len(vehiculos),
-        "horas": len(horas),
-        "coste_estimado_eur": round(float(resultado["coste_estimado_eur"].sum()), 2),
-        "energia_total_kwh": round(float(resultado["recarga_red_kwh"].sum()), 2),
-        "recargas": resultado,
+        'estado': estado,
+        'optimalidad_certificada': estado == 'Optimal',
+        'factibilidad_validada': True,
+        'vehiculos': len(vehiculos),
+        'horas': len(horas),
+        'coste_estimado_eur': round(
+            float(resultado['coste_estimado_eur'].sum()),
+            2,
+        ),
+        'energia_total_kwh': round(
+            float(resultado['recarga_red_kwh'].sum()),
+            2,
+        ),
+        'recargas': resultado,
+        'objetivo_final_flexible': objetivo_final_flexible,
+        'deficit_objetivo_final_kwh': round(
+            deficit_final_real,
+            2,
+        ),
+        'soc_objetivo_intermedio': (
+            soc_objetivo_intermedio
+            if indice_fin_primer_dia is not None
+            else None
+        ),
+        'deficit_objetivo_intermedio_kwh': round(
+            deficit_intermedio_real,
+            2,
+        ),
     }

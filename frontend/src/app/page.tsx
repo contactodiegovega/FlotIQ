@@ -83,10 +83,10 @@ export default function Home() {
 
           <div className="mt-9 flex flex-wrap items-center gap-4">
             <a
-              href="/planificacion"
+              href="/dashboard"
               className="inline-flex items-center gap-3 rounded-xl bg-[#8047F8] px-7 py-4 text-sm font-semibold text-white shadow-lg shadow-purple-500/15 transition duration-300 hover:-translate-y-1 hover:bg-[#6B2DFF]"
             >
-              Descubrir cómo funciona
+              Acceder al panel de control
               <span aria-hidden="true">→</span>
             </a>
 
