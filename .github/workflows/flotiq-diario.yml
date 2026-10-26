@@ -54,7 +54,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      # 4. Instalar dependencias de Linux
+     
+      # 4. Instalar dependencias compatibles con Linux
       - name: Instalar dependencias
         shell: bash
         run: |
@@ -67,16 +68,25 @@ jobs:
           origen = Path("requirements.txt")
           destino = Path("/tmp/flotiq-requirements-linux.txt")
 
-          lineas = origen.read_text(
-              encoding="utf-8"
-          ).splitlines()
+          contenido = origen.read_bytes()
+
+          # Detectar UTF-16 o UTF-8 automáticamente
+          if contenido.startswith((b"\xff\xfe", b"\xfe\xff")):
+              texto = contenido.decode("utf-16")
+          else:
+              texto = contenido.decode("utf-8-sig")
+
+          # Eliminar dependencias exclusivas de Windows
+          incompatibles = (
+              "pywinpty",
+              "pywin32",
+              "pywin32-ctypes",
+          )
 
           compatibles = [
               linea
-              for linea in lineas
-              if not linea.strip().lower().startswith(
-                  "pywinpty"
-              )
+              for linea in texto.splitlines()
+              if not linea.strip().lower().startswith(incompatibles)
           ]
 
           destino.write_text(
@@ -84,8 +94,12 @@ jobs:
               encoding="utf-8",
           )
 
-          print("Dependencias Linux preparadas")
+          print("Requirements convertidos a UTF-8")
+          print("Dependencias Windows excluidas")
+          print("Paquetes preparados:", len(compatibles))
           PY
+
+          python -m pip install --upgrade pip
 
           python -m pip install \
             -r /tmp/flotiq-requirements-linux.txt \
