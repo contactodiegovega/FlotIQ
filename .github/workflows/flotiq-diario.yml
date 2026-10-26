@@ -1,0 +1,69 @@
+
+name: FLOTIQ - Planificacion diaria
+
+on:
+  schedule:
+    - cron: "17 10 * * *"
+      timezone: "Europe/Madrid"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flotiq-diario
+  cancel-in-progress: false
+
+jobs:
+  planificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Descargar proyecto
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coinor-cbc
+          python -m pip install -r requirements.txt
+
+      - name: Generar plan diario
+        shell: bash
+        run: |
+          FECHA=$(TZ=Europe/Madrid date +%F)
+
+          if [ -f "data/processed/planificacion_ml_48h_${FECHA}.parquet" ]; then
+            echo "El plan de hoy ya existe."
+          else
+            python -m backend.pipeline_diario
+          fi
+
+      - name: Guardar resultados
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -f data/processed/omie_precios_actualizados.parquet
+          git add -f data/processed/planificacion_ml_48h_*.parquet
+          git add -f data/processed/planificacion_ml_48h_*.json
+          git add -f data/processed/estado_baterias_*.json
+          git add -f data/processed/prediccion_ml_48h_emitida_*.parquet
+          git add -f data/processed/prediccion_ml_48h_emitida_*.json
+          git add -f data/processed/prevision_operaciones_48h_emitida_*.parquet
+          git add -f data/processed/prevision_operaciones_48h_emitida_*.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Actualizar planificacion diaria"
+            git push
+          fi
