@@ -174,6 +174,7 @@ jobs:
           echo "Datos iniciales comprobados"
           echo "Fecha: $FECHA"
 
+      
       # 7. Ejecutar pipeline diario
       - name: Generar plan diario
         shell: bash
@@ -183,9 +184,13 @@ jobs:
           if [ -f "$PLAN" ]; then
             echo "El plan ya existe. Se verificara."
           else
+            echo "Generando plan para $FECHA"
+
             python -m backend.pipeline_diario \
-              --fecha-consulta "$FECHA"
+              --fecha-consulta "$FECHA" \
+              --recalcular
           fi
+
 
       # 8. Verificar resultado generado
       - name: Validar planificacion
