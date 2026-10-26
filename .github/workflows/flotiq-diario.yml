@@ -5,6 +5,7 @@ on:
   schedule:
     - cron: "17 10 * * *"
       timezone: "Europe/Madrid"
+
   workflow_dispatch:
 
 permissions:
@@ -16,38 +17,69 @@ concurrency:
 
 jobs:
   planificar:
+    name: Generar planificacion
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
     steps:
+      # 1. Descargar el repositorio
       - name: Descargar proyecto
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
+      # 2. Configurar Python
       - name: Preparar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements.txt
 
+      # 3. Instalar CBC y dependencias necesarias
       - name: Instalar dependencias
         run: |
           sudo apt-get update
           sudo apt-get install -y coinor-cbc
-          python -m pip install -r requirements.txt
 
+          python -m pip install --upgrade pip
+
+          python -m pip install \
+            numpy==2.5.4 \
+            pandas==3.0.6 \
+            pyarrow==26.0.0 \
+            scikit-learn==1.9.1 \
+            joblib==1.6.0 \
+            requests==2.34.2 \
+            beautifulsoup4 \
+            "pulp>=4,<5"
+
+      # 4. Comprobar que Python y CBC funcionan
+      - name: Verificar entorno
+        run: |
+          python --version
+          cbc -stop
+          python -c "import pandas, numpy, sklearn, pulp, pyarrow, joblib; print('Dependencias principales OK')"
+
+      # 5. Generar la planificacion del dia
       - name: Generar plan diario
         shell: bash
         run: |
           FECHA=$(TZ=Europe/Madrid date +%F)
 
-          if [ -f "data/processed/planificacion_ml_48h_${FECHA}.parquet" ]; then
+          echo "FLOTIQ - Fecha de consulta: $FECHA"
+
+          PLAN="data/processed/planificacion_ml_48h_${FECHA}.parquet"
+
+          if [ -f "$PLAN" ]; then
             echo "El plan de hoy ya existe."
+            echo "No se recalcula."
           else
-            python -m backend.pipeline_diario
+            python -m backend.pipeline_diario \
+              --fecha-consulta "$FECHA"
           fi
 
+      # 6. Guardar los resultados en GitHub
       - name: Guardar resultados
         shell: bash
         run: |
@@ -55,15 +87,21 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add -f data/processed/omie_precios_actualizados.parquet
+
           git add -f data/processed/planificacion_ml_48h_*.parquet
           git add -f data/processed/planificacion_ml_48h_*.json
+
           git add -f data/processed/estado_baterias_*.json
+
           git add -f data/processed/prediccion_ml_48h_emitida_*.parquet
           git add -f data/processed/prediccion_ml_48h_emitida_*.json
+
           git add -f data/processed/prevision_operaciones_48h_emitida_*.parquet
           git add -f data/processed/prevision_operaciones_48h_emitida_*.json
 
           if ! git diff --cached --quiet; then
             git commit -m "Actualizar planificacion diaria"
             git push
+          else
+            echo "No hay cambios nuevos."
           fi
