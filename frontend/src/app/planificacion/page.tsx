@@ -3,8 +3,7 @@
 
 // FLOTIQ | PLANIFICACIÓN ENERGÉTICA SEMANAL
 
-import { useState } from "react";
-import Link from "next/link";
+import { useEffect, useState } from "react";import Link from "next/link";
 import EstadoFlota from "../../components/EstadoFlota";
 import GenerarPlanificacion from "@/components/GenerarPlanificacion";
 
@@ -50,12 +49,17 @@ export default function PlanificacionPage() {
   const lunes = inicioSemana(fechaSeleccionada);
   const domingo = sumarDias(lunes, 6);
 
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
+    const [hoy, setHoy] = useState<Date | null>(null);
 
-  const semanaFutura = lunes.getTime() >=
-    inicioSemana(hoy).getTime();
+  useEffect(() => {
+    const fechaActual = new Date();
+    fechaActual.setHours(0, 0, 0, 0);
+    setHoy(fechaActual);
+  }, []);
 
+  const semanaFutura =
+    hoy !== null &&
+    lunes.getTime() >= inicioSemana(hoy).getTime();
   return (
     <main className="min-h-screen bg-[#FAFAFC] text-[#111827]">
       <header className="border-b border-gray-200 bg-white">
@@ -118,7 +122,7 @@ export default function PlanificacionPage() {
               id="fecha"
               type="date"
               value={fecha}
-              min={fechaLocal(hoy)}
+              min={hoy ? fechaLocal(hoy) : undefined}
               onChange={(e) => {
                 setFecha(e.target.value);
                 setPlanPreparado(false);

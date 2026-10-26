@@ -4,7 +4,7 @@
 import argparse
 import math
 import shutil
-
+import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -202,12 +202,113 @@ def ejecutar_pipeline(
         if ruta.exists()
     ]
 
+    
     if existentes and not recalcular:
-        raise FileExistsError(
-            'Ya existen resultados para esta fecha. '
-            'Utiliza --recalcular para generar '
-            'nuevos resultados con copia de seguridad.'
+
+        if len(existentes) != len(archivos_salida):
+            raise FileExistsError(
+                'Hay resultados parciales para esta fecha. '
+                'No se sobrescribiran automaticamente. '
+                'Revisa los archivos antes de recalcular.'
+            )
+
+        ruta_plan_existente = PROCESSED / (
+            f'planificacion_ml_48h_{fecha_texto}.parquet'
         )
+
+        ruta_resumen = PROCESSED / (
+            f'planificacion_ml_48h_{fecha_texto}.json'
+        )
+
+        ruta_estado_siguiente = PROCESSED / (
+            f'estado_baterias_{siguiente_estado}.json'
+        )
+
+        resumen = json.loads(
+            ruta_resumen.read_text(encoding='utf-8')
+        )
+
+        estado = json.loads(
+            ruta_estado_siguiente.read_text(
+                encoding='utf-8'
+            )
+        )
+
+        if (
+            resumen.get('fecha_consulta') != fecha_texto
+            or resumen.get('factibilidad_validada') is not True
+        ):
+            raise ValueError(
+                'La planificacion guardada no esta validada.'
+            )
+
+        if (
+            estado.get('fecha_plan_origen') != fecha_texto
+            or estado.get('fecha_inicio_siguiente_plan')
+            != siguiente_estado
+            or estado.get('tipo_estado')
+            != 'estimado_por_simulacion'
+            or len(
+                estado.get('energia_inicial_vehiculos', {})
+            ) != 50
+        ):
+            raise ValueError(
+                'La continuidad de baterias no es valida.'
+            )
+
+        inicio = pd.Timestamp(
+            fecha_consulta + timedelta(days=1),
+            tz=ZONA,
+        )
+
+        fin = pd.Timestamp(
+            fecha_consulta + timedelta(days=3),
+            tz=ZONA,
+        )
+
+        horas_esperadas = pd.date_range(
+            inicio.tz_convert('UTC'),
+            fin.tz_convert('UTC'),
+            freq='h',
+            inclusive='left',
+        )
+
+        plan = pd.read_parquet(ruta_plan_existente)
+
+        columnas = {'vehicle_id', 'datetime_utc'}
+
+        if not columnas.issubset(plan.columns):
+            raise ValueError(
+                'Faltan columnas en el plan guardado.'
+            )
+
+        horas_plan = pd.to_datetime(
+            plan['datetime_utc'],
+            utc=True,
+        )
+
+        if (
+            len(plan) != 50 * len(horas_esperadas)
+            or plan['vehicle_id'].nunique() != 50
+            or plan.duplicated(
+                ['vehicle_id', 'datetime_utc']
+            ).any()
+            or set(horas_plan) != set(horas_esperadas)
+        ):
+            raise ValueError(
+                'El plan guardado esta incompleto.'
+            )
+
+        print()
+        print('FLOTIQ | PLAN YA DISPONIBLE')
+        print('Fecha:', fecha_texto)
+        print('Vehiculos:', 50)
+        print('Horas:', len(horas_esperadas))
+        print('Factibilidad: validada')
+        print('No se han sobrescrito archivos.')
+
+        return ruta_plan_existente
+
 
     # Proteger los resultados anteriores
 
