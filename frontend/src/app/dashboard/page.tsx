@@ -570,44 +570,38 @@ export default function DashboardPage() {
   return (
     <main className="min-h-screen bg-[#F7F8FC] text-slate-900">
 
+      
       {/* CABECERA */}
-
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-5 sm:px-8">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-10">
 
           <Link
             href="/"
-            className="text-2xl font-extrabold tracking-tight"
+            className="text-2xl font-extrabold tracking-tight text-slate-900"
           >
-            Flot
-            <span className="text-violet-600">
-              IQ
-            </span>
+            Flot<span className="text-violet-600">IQ</span>
           </Link>
 
-          <div className="flex items-center gap-5 text-sm">
-
+          <nav className="flex items-center gap-4 sm:gap-7">
             <Link
               href="/"
-              className="text-slate-500 hover:text-violet-700"
+              className="text-sm font-medium text-slate-600 transition hover:text-violet-700"
             >
               Inicio
             </Link>
 
             <Link
-              href="/planificacion"
-              className="text-slate-500 hover:text-violet-700"
+              href="/dashboard"
+              aria-current="page"
+              className="rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
             >
-              Planificación semanal
+              Dashboard ↗
             </Link>
+          </nav>
 
-            <span className="rounded-full bg-violet-50 px-3 py-1.5 font-medium text-violet-700">
-              Centro de operaciones
-            </span>
-
-          </div>
         </div>
       </header>
+
 
       <div className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
 
