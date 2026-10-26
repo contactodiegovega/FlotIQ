@@ -1,0 +1,17 @@
+{
+  "fecha_consulta": "2026-10-26",
+  "fecha_inicio": "2026-10-27 00:00:00+01:00",
+  "fecha_fin_exclusiva": "2026-10-29 00:00:00+01:00",
+  "vehiculos": 50,
+  "horas": 48,
+  "energia_recargada_red_kwh": 2512.43,
+  "coste_estimado_eur": 167.63,
+  "estado_solver": "Optimal",
+  "factibilidad_validada": true,
+  "optimalidad_certificada": true,
+  "origen_precios": "prediccion_ml_48h",
+  "origen_operaciones": "replica_historica_semanal",
+  "soc_inicial_simulado": 0.8,
+  "soc_objetivo": 0.8,
+  "advertencia": "Planificacion basada en precios ML y operaciones simuladas. No representa turnos ni baterias confirmados en tiempo real."
+}
