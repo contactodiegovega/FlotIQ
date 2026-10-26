@@ -5,13 +5,16 @@
   "vehiculos": 50,
   "horas": 48,
   "energia_recargada_red_kwh": 2512.43,
-  "coste_estimado_eur": 167.63,
-  "estado_solver": "Optimal",
+  "coste_estimado_eur": 202.39,
+  "estado_solver": "GapLimit",
   "factibilidad_validada": true,
-  "optimalidad_certificada": true,
+  "optimalidad_certificada": false,
   "origen_precios": "prediccion_ml_48h",
   "origen_operaciones": "replica_historica_semanal",
   "soc_inicial_simulado": 0.8,
   "soc_objetivo": 0.8,
-  "advertencia": "Planificacion basada en precios ML y operaciones simuladas. No representa turnos ni baterias confirmados en tiempo real."
+  "advertencia": "Planificacion basada en precios ML y operaciones simuladas. No representa turnos ni baterias confirmados en tiempo real.",
+  "politica_consistencia": "dia_solapado_inmutable",
+  "dia_conservado": "2026-10-27",
+  "plan_origen_conservacion": "2026-10-25"
 }

@@ -29,155 +29,131 @@ def optimizar_recargas(
     indice_fin_primer_dia: int | None = None,
     soc_objetivo_intermedio: float = 0.40,
     penalizacion_intermedia_eur_kwh: float = 2.0,
+    soc_objetivo_primer_dia: float | None = None,
 ):
-
-    # Preparar las tablas
+    # 1. PREPARAR DATOS
 
     datos = datos_operativos.copy()
     precios = precios_horarios.copy()
 
     columnas_operativas = {
-        'vehicle_id',
-        'hora',
-        'energia_consumida_kwh',
-        'disponible_carga',
+        "vehicle_id",
+        "hora",
+        "energia_consumida_kwh",
+        "disponible_carga",
     }
 
-    columnas_precios = {
-        'hora',
-        'price_eur_mwh',
-    }
+    columnas_precios = {"hora", "price_eur_mwh"}
 
     if datos.empty or precios.empty:
-        raise ValueError('No hay operaciones o precios.')
+        raise ValueError("No hay operaciones o precios.")
 
     if not columnas_operativas.issubset(datos.columns):
-        raise ValueError('Faltan columnas operativas.')
+        raise ValueError("Faltan columnas operativas.")
 
     if not columnas_precios.issubset(precios.columns):
-        raise ValueError('Faltan columnas de precios.')
+        raise ValueError("Faltan columnas de precios.")
 
-    datos['hora'] = pd.to_datetime(
-        datos['hora'],
-        utc=True,
+    datos["hora"] = pd.to_datetime(
+        datos["hora"], utc=True
+    )
+    precios["hora"] = pd.to_datetime(
+        precios["hora"], utc=True
     )
 
-    precios['hora'] = pd.to_datetime(
-        precios['hora'],
-        utc=True,
+    if datos["hora"].isna().any() or precios["hora"].isna().any():
+        raise ValueError("Hay horas vacías.")
+
+    # Normalización a UTC sin zona para el modelo
+
+    datos["hora"] = datos["hora"].dt.tz_localize(None)
+    precios["hora"] = precios["hora"].dt.tz_localize(None)
+
+    if datos["vehicle_id"].isna().any():
+        raise ValueError("Existen vehículos sin identificador.")
+
+    if datos.duplicated(["vehicle_id", "hora"]).any():
+        raise ValueError("Hay operaciones duplicadas.")
+
+    if precios["hora"].duplicated().any():
+        raise ValueError("Hay precios duplicados.")
+
+    datos["energia_consumida_kwh"] = pd.to_numeric(
+        datos["energia_consumida_kwh"], errors="coerce"
     )
 
-    if (
-        datos['hora'].isna().any()
-        or precios['hora'].isna().any()
-    ):
-        raise ValueError('Hay horas vacias.')
-
-    # Normalizar internamente a UTC
-
-    datos['hora'] = (
-        datos['hora'].dt.tz_localize(None)
-    )
-
-    precios['hora'] = (
-        precios['hora'].dt.tz_localize(None)
-    )
-
-    if datos['vehicle_id'].isna().any():
-        raise ValueError('Existen vehiculos sin identificador.')
-
-    if datos.duplicated(['vehicle_id', 'hora']).any():
-        raise ValueError('Hay operaciones duplicadas.')
-
-    if precios['hora'].duplicated().any():
-        raise ValueError('Hay precios duplicados.')
-
-    datos['energia_consumida_kwh'] = pd.to_numeric(
-        datos['energia_consumida_kwh'],
-        errors='coerce',
-    )
-
-    precios['price_eur_mwh'] = pd.to_numeric(
-        precios['price_eur_mwh'],
-        errors='coerce',
+    precios["price_eur_mwh"] = pd.to_numeric(
+        precios["price_eur_mwh"], errors="coerce"
     )
 
     if not np.isfinite(
-        datos['energia_consumida_kwh'].to_numpy()
+        datos["energia_consumida_kwh"].to_numpy()
     ).all():
-        raise ValueError('Consumos no numericos.')
+        raise ValueError("Consumos no numéricos.")
 
-    if (datos['energia_consumida_kwh'] < 0).any():
-        raise ValueError('Consumos negativos.')
+    if (datos["energia_consumida_kwh"] < 0).any():
+        raise ValueError("Consumos negativos.")
 
     if not np.isfinite(
-        precios['price_eur_mwh'].to_numpy()
+        precios["price_eur_mwh"].to_numpy()
     ).all():
-        raise ValueError('Precios no numericos.')
+        raise ValueError("Precios no numéricos.")
 
-    if datos['disponible_carga'].isna().any():
-        raise ValueError('Disponibilidad incompleta.')
+    if datos["disponible_carga"].isna().any():
+        raise ValueError("Disponibilidad incompleta.")
 
     if not pd.api.types.is_bool_dtype(
-        datos['disponible_carga']
+        datos["disponible_carga"]
     ):
         raise ValueError(
-            'disponible_carga debe ser booleana.'
+            "disponible_carga debe ser booleana."
         )
 
-    # Ordenar precios y comprobar continuidad
+    precios = precios.sort_values(
+        "hora"
+    ).reset_index(drop=True)
 
-    precios = (
-        precios.sort_values('hora')
-        .reset_index(drop=True)
-    )
-
-    horas = precios['hora'].tolist()
+    horas = precios["hora"].tolist()
 
     if len(horas) > 1 and not (
-        precios['hora'].diff().iloc[1:]
+        precios["hora"].diff().iloc[1:]
         == pd.Timedelta(hours=1)
     ).all():
         raise ValueError(
-            'El horizonte no tiene horas consecutivas.'
+            "El horizonte no tiene horas consecutivas."
         )
 
     vehiculos = sorted(
-        datos['vehicle_id'].unique().tolist()
+        datos["vehicle_id"].unique().tolist()
     )
 
     if set(energia_final_objetivo) != set(vehiculos):
         raise ValueError(
-            'Faltan objetivos finales por vehiculo.'
+            "Faltan objetivos finales por vehículo."
         )
 
     if len(datos) != len(vehiculos) * len(horas):
         raise ValueError(
-            'La matriz vehiculo-hora esta incompleta.'
+            "La matriz vehículo-hora está incompleta."
         )
 
-    if set(datos['hora']) != set(horas):
+    if set(datos["hora"]) != set(horas):
         raise ValueError(
-            'Las horas de precios y operaciones no coinciden.'
+            "Las horas de precios y operaciones no coinciden."
         )
 
     datos_idx = datos.set_index(
-        ['vehicle_id', 'hora']
+        ["vehicle_id", "hora"]
     )
 
     precios_idx = precios.set_index(
-        'hora'
-    )['price_eur_mwh']
+        "hora"
+    )["price_eur_mwh"]
 
-    energia_min = (
-        CAPACIDAD_BATERIA_KWH * SOC_MINIMO
-    )
+    energia_min = CAPACIDAD_BATERIA_KWH * SOC_MINIMO
+    energia_max = CAPACIDAD_BATERIA_KWH * SOC_OBJETIVO
 
-    energia_max = (
-        CAPACIDAD_BATERIA_KWH * SOC_OBJETIVO
-    )
-
-    # Estados iniciales y objetivos
+    # 2. ESTADOS INICIALES Y OBJETIVOS
 
     if energia_inicial_vehiculos is None:
         energia_inicial_vehiculos = {
@@ -187,18 +163,16 @@ def optimizar_recargas(
 
     if set(energia_inicial_vehiculos) != set(vehiculos):
         raise ValueError(
-            'Faltan estados iniciales de bateria.'
+            "Faltan estados iniciales de batería."
         )
 
     iniciales = {}
     objetivos = {}
 
     for v in vehiculos:
-
         inicial = float(
             energia_inicial_vehiculos[v]
         )
-
         objetivo = float(
             energia_final_objetivo[v]
         )
@@ -208,7 +182,7 @@ def optimizar_recargas(
             or not energia_min <= inicial <= energia_max
         ):
             raise ValueError(
-                f'Bateria inicial invalida: {v}'
+                f"Batería inicial inválida: {v}"
             )
 
         if (
@@ -216,23 +190,69 @@ def optimizar_recargas(
             or not energia_min <= objetivo <= energia_max
         ):
             raise ValueError(
-                f'Objetivo final invalido: {v}'
+                f"Objetivo final inválido: {v}"
             )
 
         iniciales[v] = inicial
         objetivos[v] = objetivo
 
-    # Validar parametros flexibles
+    # 3. VALIDAR PENALIZACIONES
 
     if objetivo_final_flexible:
-
         if (
             not np.isfinite(penalizacion_deficit_eur_kwh)
             or penalizacion_deficit_eur_kwh <= 0
         ):
             raise ValueError(
-                'Penalizacion final invalida.'
+                "Penalización final inválida."
             )
+
+    # Solo existe una reserva intermedia.
+    # Puede indicarse su índice o calcularse
+    # automáticamente para el primer día local.
+
+    if soc_objetivo_primer_dia is not None:
+
+        if indice_fin_primer_dia is not None:
+            raise ValueError(
+                "No combines soc_objetivo_primer_dia "
+                "e indice_fin_primer_dia."
+            )
+
+        if not (
+            np.isfinite(soc_objetivo_primer_dia)
+            and SOC_MINIMO
+            <= soc_objetivo_primer_dia
+            <= SOC_OBJETIVO
+        ):
+            raise ValueError(
+                "SOC del primer día fuera de límites."
+            )
+
+        fechas_locales = (
+            pd.DatetimeIndex(horas)
+            .tz_localize("UTC")
+            .tz_convert("Europe/Madrid")
+            .date
+        )
+
+        if len(set(fechas_locales)) != 2:
+            raise ValueError(
+                "La reserva automática requiere "
+                "dos días naturales locales."
+            )
+
+        primer_dia = fechas_locales[0]
+
+        indice_fin_primer_dia = max(
+            i
+            for i, dia_local in enumerate(fechas_locales)
+            if dia_local == primer_dia
+        )
+
+        soc_objetivo_intermedio = float(
+            soc_objetivo_primer_dia
+        )
 
     if indice_fin_primer_dia is not None:
 
@@ -241,7 +261,7 @@ def optimizar_recargas(
             or not 0 <= indice_fin_primer_dia < len(horas) - 1
         ):
             raise ValueError(
-                'Indice intermedio fuera de rango.'
+                "Índice intermedio fuera de rango."
             )
 
         if not (
@@ -250,7 +270,7 @@ def optimizar_recargas(
             <= SOC_OBJETIVO
         ):
             raise ValueError(
-                'SOC intermedio fuera de limites.'
+                "SOC intermedio fuera de límites."
             )
 
         if (
@@ -258,10 +278,10 @@ def optimizar_recargas(
             or penalizacion_intermedia_eur_kwh <= 0
         ):
             raise ValueError(
-                'Penalizacion intermedia invalida.'
+                "Penalización intermedia inválida."
             )
 
-    # Crear modelo matematico
+    # 4. CREAR MODELO DE OPTIMIZACIÓN
 
     periodos = range(len(horas))
 
@@ -272,30 +292,30 @@ def optimizar_recargas(
     ]
 
     modelo = pulp.LpProblem(
-        'FlotIQ_Recargas',
+        "FlotIQ_Recargas",
         pulp.LpMinimize,
     )
 
     carga = modelo.add_variable_dicts(
-        'carga_red',
+        "carga_red",
         indices,
         lowBound=0,
     )
 
     conexion = modelo.add_variable_dicts(
-        'conexion',
+        "conexion",
         indices,
-        cat='Binary',
+        cat="Binary",
     )
 
     bateria = modelo.add_variable_dicts(
-        'bateria',
+        "bateria",
         indices,
         lowBound=energia_min,
         upBound=energia_max,
     )
 
-    # Funcion objetivo: coste de electricidad
+    # Coste eléctrico
 
     funcion_objetivo = pulp.lpSum(
         carga[v, t]
@@ -312,12 +332,11 @@ def optimizar_recargas(
         * soc_objetivo_intermedio
     )
 
-    # Penalizacion por no alcanzar el objetivo final
+    # Penalización por batería final insuficiente
 
     if objetivo_final_flexible:
-
         deficit_final = modelo.add_variable_dicts(
-            'deficit_final',
+            "deficit_final",
             vehiculos,
             lowBound=0,
         )
@@ -330,12 +349,11 @@ def optimizar_recargas(
             )
         )
 
-    # Nueva penalizacion por reserva intermedia
+    # Penalización por batería intermedia insuficiente
 
     if indice_fin_primer_dia is not None:
-
         deficit_intermedio = modelo.add_variable_dicts(
-            'deficit_intermedio',
+            "deficit_intermedio",
             vehiculos,
             lowBound=0,
         )
@@ -350,22 +368,21 @@ def optimizar_recargas(
 
     modelo += funcion_objetivo
 
-    # Restricciones de cada vehiculo
+    # 5. RESTRICCIONES POR VEHÍCULO
 
     for v in vehiculos:
 
         for t in periodos:
-
             fila = datos_idx.loc[
                 (v, horas[t])
             ]
 
             consumo = float(
-                fila['energia_consumida_kwh']
+                fila["energia_consumida_kwh"]
             )
 
             disponible = bool(
-                fila['disponible_carga']
+                fila["disponible_carga"]
             )
 
             if not disponible:
@@ -391,37 +408,32 @@ def optimizar_recargas(
                 + carga[v, t] * EFICIENCIA_CARGA
             )
 
-        # Objetivo al final de las 48 horas
+        # Objetivo al finalizar las 48 horas
 
         if objetivo_final_flexible:
-
             modelo += (
                 bateria[v, len(horas) - 1]
                 + deficit_final[v]
                 >= objetivos[v]
             )
-
         else:
-
             modelo += (
                 bateria[v, len(horas) - 1]
                 == objetivos[v]
             )
 
-        # Reserva al finalizar el primer dia
+        # Una única reserva al finalizar el primer día
 
         if indice_fin_primer_dia is not None:
-
             modelo += (
                 bateria[v, indice_fin_primer_dia]
                 + deficit_intermedio[v]
                 >= objetivo_intermedio_kwh
             )
 
-    # Restricciones compartidas de la instalacion
+    # 6. RESTRICCIONES DE LA INSTALACIÓN
 
     for t in periodos:
-
         modelo += (
             pulp.lpSum(
                 conexion[v, t]
@@ -439,7 +451,7 @@ def optimizar_recargas(
             * INTERVALO_HORAS
         )
 
-    # Ejecutar CBC
+    # 7. EJECUTAR CBC
 
     solver = pulp.COIN_CMD(
         msg=False,
@@ -451,13 +463,13 @@ def optimizar_recargas(
 
     if (
         not estadisticas.has_solution
-        or estado in {'Infeasible', 'Unbounded'}
+        or estado in {"Infeasible", "Unbounded"}
     ):
         raise RuntimeError(
-            f'No hay solucion factible. Estado CBC: {estado}'
+            f"No hay solución factible. Estado CBC: {estado}"
         )
 
-    # Verificar los resultados de forma independiente
+    # 8. VERIFICAR RESULTADOS
 
     registros = []
 
@@ -475,11 +487,9 @@ def optimizar_recargas(
     deficit_intermedio_real = 0.0
 
     for v in vehiculos:
-
         anterior = iniciales[v]
 
         for t in periodos:
-
             valores = [
                 pulp.value(carga[v, t]),
                 pulp.value(bateria[v, t]),
@@ -491,13 +501,14 @@ def optimizar_recargas(
                 for x in valores
             ):
                 raise RuntimeError(
-                    f'Solucion incompleta: {v}, hora {t}'
+                    f"Solución incompleta: {v}, hora {t}"
                 )
 
-            energia_red, energia_bateria, conectado_real = map(
-                float,
-                valores,
-            )
+            (
+                energia_red,
+                energia_bateria,
+                conectado_real,
+            ) = map(float, valores)
 
             conectado = int(
                 round(conectado_real)
@@ -508,7 +519,7 @@ def optimizar_recargas(
                 or conectado not in (0, 1)
             ):
                 raise RuntimeError(
-                    f'Conexion no binaria: {v}, hora {t}'
+                    f"Conexión no binaria: {v}, hora {t}"
                 )
 
             if (
@@ -520,7 +531,7 @@ def optimizar_recargas(
                 + TOLERANCIA
             ):
                 raise RuntimeError(
-                    f'Carga individual incorrecta: {v}, hora {t}'
+                    f"Carga individual incorrecta: {v}, hora {t}"
                 )
 
             fila = datos_idx.loc[
@@ -528,11 +539,11 @@ def optimizar_recargas(
             ]
 
             if (
-                not bool(fila['disponible_carga'])
+                not bool(fila["disponible_carga"])
                 and conectado
             ):
                 raise RuntimeError(
-                    f'Carga fuera de disponibilidad: {v}, hora {t}'
+                    f"Carga fuera de disponibilidad: {v}, hora {t}"
                 )
 
             if not (
@@ -541,12 +552,12 @@ def optimizar_recargas(
                 <= energia_max + TOLERANCIA
             ):
                 raise RuntimeError(
-                    f'Bateria fuera de limites: {v}, hora {t}'
+                    f"Batería fuera de límites: {v}, hora {t}"
                 )
 
             calculada = (
                 anterior
-                - float(fila['energia_consumida_kwh'])
+                - float(fila["energia_consumida_kwh"])
                 + energia_red * EFICIENCIA_CARGA
             )
 
@@ -554,7 +565,7 @@ def optimizar_recargas(
                 calculada - energia_bateria
             ) > TOLERANCIA:
                 raise RuntimeError(
-                    f'Balance incorrecto: {v}, hora {t}'
+                    f"Balance incorrecto: {v}, hora {t}"
                 )
 
             anterior = energia_bateria
@@ -567,28 +578,28 @@ def optimizar_recargas(
             )
 
             registros.append({
-                'vehicle_id': v,
-                'hora': pd.Timestamp(horas[t]),
-                'recarga_red_kwh': max(energia_red, 0.0),
-                'energia_bateria_kwh': energia_bateria,
-                'conexion': conectado,
-                'soc_pct': (
+                "vehicle_id": v,
+                "hora": pd.Timestamp(horas[t]),
+                "recarga_red_kwh": max(energia_red, 0.0),
+                "energia_bateria_kwh": energia_bateria,
+                "conexion": conectado,
+                "soc_pct": (
                     energia_bateria
                     / CAPACIDAD_BATERIA_KWH
                     * 100
                 ),
-                'coste_estimado_eur': (
+                "coste_estimado_eur": (
                     energia_red * precio / 1000
                 ),
             })
 
-            # Comprobar reserva del primer dia
+            # Validar la reserva intermedia
 
             if t == indice_fin_primer_dia:
-
                 deficit_intermedio_real += max(
                     0.0,
-                    objetivo_intermedio_kwh - energia_bateria,
+                    objetivo_intermedio_kwh
+                    - energia_bateria,
                 )
 
                 holgura = pulp.value(
@@ -601,13 +612,12 @@ def optimizar_recargas(
                     < objetivo_intermedio_kwh - TOLERANCIA
                 ):
                     raise RuntimeError(
-                        f'Reserva intermedia incorrecta: {v}'
+                        f"Reserva intermedia incorrecta: {v}"
                     )
 
-        # Verificar el objetivo final
+        # Validar objetivo al final del horizonte
 
         if objetivo_final_flexible:
-
             holgura = pulp.value(
                 deficit_final[v]
             )
@@ -618,12 +628,12 @@ def optimizar_recargas(
                 < objetivos[v] - TOLERANCIA
             ):
                 raise RuntimeError(
-                    f'Objetivo final flexible incorrecto: {v}'
+                    f"Objetivo final flexible incorrecto: {v}"
                 )
 
         elif abs(anterior - objetivos[v]) > TOLERANCIA:
             raise RuntimeError(
-                f'Objetivo final incorrecto: {v}'
+                f"Objetivo final incorrecto: {v}"
             )
 
         deficit_final_real += max(
@@ -631,13 +641,13 @@ def optimizar_recargas(
             objetivos[v] - anterior,
         )
 
-    # Comprobar limites globales
+    # Comprobar límites globales
 
     for t in periodos:
 
         if conexiones_hora[t] > NUM_CARGADORES:
             raise RuntimeError(
-                f'Cargadores excedidos, hora {t}'
+                f"Cargadores excedidos, hora {t}"
             )
 
         if (
@@ -647,40 +657,39 @@ def optimizar_recargas(
             + TOLERANCIA
         ):
             raise RuntimeError(
-                f'Potencia excedida, hora {t}'
+                f"Potencia excedida, hora {t}"
             )
 
-    # Devolver resultados
+    # 9. DEVOLVER RESULTADOS
 
     resultado = pd.DataFrame(registros)
 
     return {
-        'estado': estado,
-        'optimalidad_certificada': estado == 'Optimal',
-        'factibilidad_validada': True,
-        'vehiculos': len(vehiculos),
-        'horas': len(horas),
-        'coste_estimado_eur': round(
-            float(resultado['coste_estimado_eur'].sum()),
+        "estado": estado,
+        "optimalidad_certificada": estado == "Optimal",
+        "factibilidad_validada": True,
+        "vehiculos": len(vehiculos),
+        "horas": len(horas),
+        "coste_estimado_eur": round(
+            float(resultado["coste_estimado_eur"].sum()),
             2,
         ),
-        'energia_total_kwh': round(
-            float(resultado['recarga_red_kwh'].sum()),
+        "energia_total_kwh": round(
+            float(resultado["recarga_red_kwh"].sum()),
             2,
         ),
-        'recargas': resultado,
-        'objetivo_final_flexible': objetivo_final_flexible,
-        'deficit_objetivo_final_kwh': round(
-            deficit_final_real,
-            2,
+        "recargas": resultado,
+        "objetivo_final_flexible": objetivo_final_flexible,
+        "deficit_objetivo_final_kwh": round(
+            deficit_final_real, 2
         ),
-        'soc_objetivo_intermedio': (
+        "indice_fin_primer_dia": indice_fin_primer_dia,
+        "soc_objetivo_intermedio": (
             soc_objetivo_intermedio
             if indice_fin_primer_dia is not None
             else None
         ),
-        'deficit_objetivo_intermedio_kwh': round(
-            deficit_intermedio_real,
-            2,
+        "deficit_objetivo_intermedio_kwh": round(
+            deficit_intermedio_real, 2
         ),
     }

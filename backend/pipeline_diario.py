@@ -15,7 +15,7 @@ from backend.actualizar_precios import actualizar_precios
 from backend.prediccion_48h import run as generar_precios
 from backend.prevision_operaciones_48h import crear_escenario
 from backend.planificacion_48h import planificar_48h
-from backend.continuidad_baterias import guardar_continuidad
+
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -148,6 +148,25 @@ def ejecutar_pipeline(
 ):
 
     fecha_texto = fecha_consulta.isoformat()
+
+    # Impedir recalculos que rompan una cadena publicada.
+
+    fecha_siguiente = (
+        fecha_consulta + timedelta(days=1)
+    ).isoformat()
+
+    plan_siguiente = PROCESSED / (
+        f'planificacion_ml_48h_{fecha_siguiente}.parquet'
+    )
+
+    if recalcular and plan_siguiente.exists():
+        raise RuntimeError(
+            'No se puede recalcular esta planificacion '
+            'porque existe un plan posterior que depende '
+            'de ella. Es necesario reconstruir la cadena '
+            'de forma controlada.'
+        )
+
 
     inicio_plan = (
         fecha_consulta + timedelta(days=1)
@@ -404,14 +423,85 @@ def ejecutar_pipeline(
         tiempo_maximo=180,
     )
 
-    # PASO 4: CONTINUIDAD DE BATERIAS
-
+    # PASO 4: VALIDAR CONTINUIDAD DE BATERIAS
     print()
-    print('PASO 4 | Continuidad de baterias')
+    print('PASO 4 | Validacion de continuidad de baterias')
 
-    ruta_estado = guardar_continuidad(
-        fecha_consulta,
+    dia_primero = fecha_consulta + timedelta(days=1)
+    dia_siguiente = fecha_consulta + timedelta(days=2)
+
+    ruta_estado = PROCESSED / (
+        f'estado_baterias_{dia_siguiente}.json'
     )
+
+    if not ruta_estado.is_file():
+        raise RuntimeError(
+            f'Falta el estado de continuidad: {ruta_estado.name}'
+        )
+
+    estado = json.loads(
+        ruta_estado.read_text(encoding='utf-8')
+    )
+
+    if (
+        estado.get('fecha_plan_origen')
+        != fecha_consulta.isoformat()
+        or estado.get('fecha_inicio_siguiente_plan')
+        != dia_siguiente.isoformat()
+        or estado.get('tipo_estado')
+        != 'estimado_por_simulacion'
+    ):
+        raise RuntimeError(
+            'Metadatos de continuidad incorrectos'
+        )
+
+    plan_validacion = pd.read_parquet(ruta_plan)
+
+    plan_validacion['datetime_utc'] = pd.to_datetime(
+        plan_validacion['datetime_utc'],
+        utc=True,
+    )
+
+    primer_dia = plan_validacion.loc[
+        plan_validacion['datetime_utc']
+        .dt.tz_convert(ZONA)
+        .dt.date == dia_primero
+    ]
+
+    finales = (
+        primer_dia.sort_values('datetime_utc')
+        .groupby('vehicle_id')
+        .tail(1)
+    )
+
+    baterias_guardadas = estado.get(
+        'energia_inicial_vehiculos'
+    )
+
+    if (
+        not isinstance(baterias_guardadas, dict)
+        or len(finales) != 50
+        or set(finales['vehicle_id'])
+        != set(baterias_guardadas)
+    ):
+        raise RuntimeError(
+            'Continuidad incompleta para los 50 vehiculos'
+        )
+
+    for fila in finales.itertuples(index=False):
+        energia_plan = float(fila.energia_bateria_kwh)
+        energia_guardada = float(
+            baterias_guardadas[fila.vehicle_id]
+        )
+
+        if abs(energia_plan - energia_guardada) > 0.025:
+            raise RuntimeError(
+                f'Continuidad incorrecta: {fila.vehicle_id}'
+            )
+
+    print('Continuidad validada: 50 vehiculos')
+    print('Estado existente conservado:', ruta_estado.name)
+
 
     print()
     print('FLOTIQ | PIPELINE FINALIZADO')

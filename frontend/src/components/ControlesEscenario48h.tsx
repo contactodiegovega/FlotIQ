@@ -7,15 +7,11 @@ const API =
   process.env.NEXT_PUBLIC_FLOTIQ_API_URL ||
   "http://127.0.0.1:8000";
 
-type Modelo = {
-  id: string;
-  nombre: string;
-  disponible: boolean;
-};
+type Modelo = "baseline" | "hgb" | "ridge" | "rf" | "xgb";
+type DiaDemanda = "primero" | "segundo" | "ambos";
 
-type DiaDemanda = "ambos" | "primero" | "segundo";
-
-export type PlanEscenario = {
+type Respuesta = {
+  cambio_demanda_pct: number;
   resumen: {
     fecha_consulta: string;
     inicio: string;
@@ -33,14 +29,12 @@ export type PlanEscenario = {
       soc_minimo_pct: number;
     } | null;
   };
-
   precios: {
     registros: {
       fecha_local: string;
       precio_predicho_eur_mwh: number;
     }[];
   };
-
   flota: {
     registros: {
       fecha_local: string;
@@ -51,7 +45,6 @@ export type PlanEscenario = {
       soc_minimo_pct: number;
     }[];
   };
-
   calendario: {
     dias: string[];
     vehiculos: string[];
@@ -69,88 +62,165 @@ export type PlanEscenario = {
   };
 };
 
-type RespuestaEscenario = PlanEscenario & {
-  modelo: string;
-  nombre_modelo: string;
-  cambio_demanda_pct: number;
-  dia_demanda: DiaDemanda;
-};
-
 type Props = {
   fechaConsulta: string;
   planActivo: string;
-  deshabilitado?: boolean;
-  onAplicar: (
-    plan: PlanEscenario,
-    etiqueta: string
-  ) => void;
+  deshabilitado: boolean;
+  onEstadoCalculo: (activo: boolean) => void;
   onRestablecer: () => void;
-  onEstadoCalculo: (calculando: boolean) => void;
+  onAplicar: (
+    plan: Respuesta,
+    descripcion: string
+  ) => void;
+};
+
+const nombres: Record<Modelo, string> = {
+  baseline: "Baseline semanal",
+  hgb: "HistGradientBoosting",
+  ridge: "Ridge Regression",
+  rf: "Random Forest",
+  xgb: "XGBoost",
 };
 
 export default function ControlesEscenario48h({
   fechaConsulta,
   planActivo,
-  deshabilitado = false,
-  onAplicar,
-  onRestablecer,
+  deshabilitado,
   onEstadoCalculo,
+  onRestablecer,
+  onAplicar,
 }: Props) {
-  const [modelos, setModelos] = useState<Modelo[]>([]);
-  const [modelo, setModelo] = useState("hgb");
-  const [demanda, setDemanda] = useState(0);
+  const [modelo, setModelo] = useState<Modelo>("hgb");
+
   const [diaDemanda, setDiaDemanda] =
     useState<DiaDemanda>("ambos");
 
-  const [calculando, setCalculando] = useState(false);
-  const [error, setError] = useState("");
+  const [demanda, setDemanda] = useState(0);
+  const [maximo, setMaximo] = useState<number | null>(null);
+  const [calculandoLimite, setCalculandoLimite] =
+    useState(false);
+
+  const [simulando, setSimulando] = useState(false);
+  const [mensaje, setMensaje] = useState("");
+
+  const [disponibles, setDisponibles] = useState<Modelo[]>(
+    ["hgb", "baseline"]
+  );
+
+  // Cargar modelos disponibles.
 
   useEffect(() => {
-    const controlador = new AbortController();
+    const control = new AbortController();
 
     fetch(`${API}/api/escenarios/modelos`, {
-      signal: controlador.signal,
+      signal: control.signal,
     })
+      .then((respuesta) => respuesta.json())
+      .then(
+        (datos: {
+          modelos?: {
+            id: Modelo;
+            disponible: boolean;
+          }[];
+        }) => {
+          if (control.signal.aborted || !datos.modelos) {
+            return;
+          }
+
+          setDisponibles(
+            datos.modelos
+              .filter((m) => m.disponible)
+              .map((m) => m.id)
+          );
+        }
+      )
+      .catch(() => {});
+
+    return () => control.abort();
+  }, []);
+
+  // Calcular el limite factible al cambiar
+  // de fecha, modelo o dia seleccionado.
+
+  useEffect(() => {
+    if (!fechaConsulta) return;
+
+    const control = new AbortController();
+
+    setDemanda(0);
+    setMaximo(null);
+    setMensaje("");
+    setCalculandoLimite(true);
+
+    const params = new URLSearchParams({
+      fecha_consulta: fechaConsulta,
+      modelo,
+      dia_demanda: diaDemanda,
+    });
+
+    fetch(
+      `${API}/api/escenarios/limite-demanda?${params}`,
+      {
+        signal: control.signal,
+        cache: "no-store",
+      }
+    )
       .then(async (respuesta) => {
         if (!respuesta.ok) {
-          throw new Error(
-            "No se pudieron consultar los modelos"
-          );
+          throw new Error("Limite no disponible");
         }
 
-        return respuesta.json();
+        return (await respuesta.json()) as {
+          maximo_pct: number;
+        };
       })
-      .then((datos: { modelos: Modelo[] }) => {
-        if (!controlador.signal.aborted) {
-          setModelos(datos.modelos);
-        }
+      .then((datos) => {
+        if (control.signal.aborted) return;
+
+        setMaximo(
+          Math.max(0, Math.floor(datos.maximo_pct))
+        );
       })
-      .catch((fallo: unknown) => {
-        if (!controlador.signal.aborted) {
-          setError(
-            fallo instanceof Error
-              ? fallo.message
-              : "Error al cargar los modelos"
-          );
+      .catch(() => {
+        if (control.signal.aborted) return;
+
+        // Sin un limite comprobado no permitimos
+        // lanzar nuevas simulaciones.
+
+        setMaximo(null);
+        setMensaje(
+          "No está disponible el cálculo de capacidad en este momento."
+        );
+      })
+      .finally(() => {
+        if (!control.signal.aborted) {
+          setCalculandoLimite(false);
         }
       });
 
-    return () => controlador.abort();
-  }, []);
+    return () => control.abort();
+  }, [fechaConsulta, modelo, diaDemanda]);
 
-  useEffect(() => {
-    setModelo("hgb");
-    setDemanda(0);
-    setDiaDemanda("ambos");
-    setError("");
-  }, [fechaConsulta]);
+  // Generar escenario sin guardar cambios.
 
-  async function ejecutarSimulacion() {
-    if (!fechaConsulta || calculando) return;
+  async function aplicar() {
+    if (
+      !fechaConsulta ||
+      maximo === null ||
+      simulando ||
+      deshabilitado
+    ) {
+      return;
+    }
 
-    setCalculando(true);
+    setSimulando(true);
     onEstadoCalculo(true);
-    setError("");
+    setMensaje("");
+
+    const solicitado = Math.max(
+      -30,
+      Math.min(demanda, maximo)
+    );
 
     try {
       const respuesta = await fetch(
@@ -163,246 +233,193 @@ export default function ControlesEscenario48h({
           body: JSON.stringify({
             fecha_consulta: fechaConsulta,
             modelo,
-            cambio_demanda_pct: demanda,
+            cambio_demanda_pct: solicitado,
             dia_demanda: diaDemanda,
           }),
         }
       );
 
-      const resultado = await respuesta.json();
-
       if (!respuesta.ok) {
-        throw new Error(
-          typeof resultado.detail === "string"
-            ? resultado.detail
-            : "No se pudo calcular el escenario"
-        );
+        throw new Error("Simulacion no disponible");
       }
 
-      const nuevoPlan =
-        resultado as RespuestaEscenario;
+      const plan = (await respuesta.json()) as Respuesta;
 
-      if (
-        !nuevoPlan.resumen?.factibilidad_validada ||
-        !nuevoPlan.calendario?.registros ||
-        nuevoPlan.calendario.registros.length !==
-          nuevoPlan.resumen.vehiculos *
-            nuevoPlan.resumen.horas
-      ) {
-        throw new Error(
-          "El nuevo escenario no tiene un calendario válido"
-        );
-      }
+      // El backend informa del porcentaje
+      // realmente aplicado.
 
-      const variacion =
-        demanda > 0 ? `+${demanda}%` : `${demanda}%`;
+      const porcentaje = plan.cambio_demanda_pct;
+      setDemanda(porcentaje);
 
-      const descripcion =
-        `${nuevoPlan.nombre_modelo} · Demanda ${variacion}` +
-        (demanda !== 0
-          ? ` · Día: ${
-              diaDemanda === "ambos"
-                ? "ambos"
-                : diaDemanda === "primero"
-                  ? "primero"
-                  : "segundo"
-            }`
-          : "");
+      const signo = porcentaje > 0 ? "+" : "";
 
-      onAplicar(nuevoPlan, descripcion);
-    } catch (fallo: unknown) {
-      setError(
-        fallo instanceof Error
-          ? fallo.message
-          : "Error al ejecutar la simulación"
+      const diaTexto =
+        diaDemanda === "ambos"
+          ? "ambos los días"
+          : diaDemanda === "primero"
+          ? "primer día"
+          : "segundo día";
+
+      onAplicar(
+        plan,
+        `${nombres[modelo]} · ${diaTexto} · ${signo}${porcentaje} % demanda`
+      );
+    } catch {
+      // Nunca sustituir un plan correcto
+      // por un escenario no disponible.
+
+      setMensaje(
+        "No se ha podido completar esta simulación. La planificación anterior se conserva."
       );
     } finally {
-      setCalculando(false);
+      setSimulando(false);
       onEstadoCalculo(false);
     }
   }
 
-  function restaurar() {
-    setModelo("hgb");
-    setDemanda(0);
-    setDiaDemanda("ambos");
-    setError("");
-    onRestablecer();
-  }
-
   const bloqueado =
-    calculando || deshabilitado || !fechaConsulta;
+    deshabilitado ||
+    simulando ||
+    calculandoLimite ||
+    maximo === null;
 
   return (
-    <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-slate-900">
-            Configurar planificación
+            Simulador de demanda
           </h2>
 
           <p className="mt-1 text-sm text-slate-500">
-            Elige el modelo y ajusta la demanda
-            para calcular un escenario alternativo.
+            Ajusta la actividad dentro de la capacidad
+            de la flota.
           </p>
         </div>
 
-        <span className="rounded-full bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800">
-          Mostrando: {planActivo}
-        </span>
+        <button
+          type="button"
+          disabled={simulando}
+          onClick={() => {
+            setDemanda(0);
+            setMensaje("");
+            onRestablecer();
+          }}
+          className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          Restablecer plan
+        </button>
       </div>
 
-      <div className="mt-5 grid gap-5 md:grid-cols-3">
-        <label className="block text-sm font-semibold text-slate-700">
-          Modelo de predicción
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <label className="text-sm font-semibold text-slate-700">
+          Modelo de precios
 
           <select
             value={modelo}
-            disabled={bloqueado}
-            onChange={(e) => setModelo(e.target.value)}
-            className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-normal disabled:opacity-50"
+            disabled={simulando}
+            onChange={(e) =>
+              setModelo(e.target.value as Modelo)
+            }
+            className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-3 py-3 font-normal"
           >
-            {modelos.length === 0 && (
-              <option value="hgb">
-                Cargando modelos...
-              </option>
-            )}
-
-            {modelos.map((m) => (
-              <option
-                key={m.id}
-                value={m.id}
-                disabled={!m.disponible}
-              >
-                {m.nombre}
-                {!m.disponible
-                  ? " · No disponible"
-                  : ""}
+            {disponibles.map((id) => (
+              <option key={id} value={id}>
+                {nombres[id]}
               </option>
             ))}
           </select>
-
-          <span className="mt-2 block text-xs font-normal text-slate-500">
-            Baseline, HGB, Ridge, Random Forest y XGBoost.
-          </span>
         </label>
 
-        <div>
-          <label
-            htmlFor="flotiq-demanda"
-            className="flex justify-between text-sm font-semibold text-slate-700"
-          >
-            <span>Cambio de demanda</span>
-
-            <span className="text-violet-700">
-              {demanda > 0 ? "+" : ""}
-              {demanda}%
-            </span>
-          </label>
-
-          <input
-            id="flotiq-demanda"
-            type="range"
-            min={-30}
-            max={50}
-            step={5}
-            disabled={bloqueado}
-            value={demanda}
-            onChange={(e) =>
-              setDemanda(Number(e.target.value))
-            }
-            className="mt-6 w-full accent-violet-600 disabled:opacity-50"
-          />
-
-          <div className="mt-2 flex justify-between text-xs text-slate-500">
-            <span>−30%</span>
-            <span>Normal</span>
-            <span>+50%</span>
-          </div>
-        </div>
-
-        <label className="block text-sm font-semibold text-slate-700">
-          Día afectado por la demanda
+        <label className="text-sm font-semibold text-slate-700">
+          Aplicar el cambio a
 
           <select
             value={diaDemanda}
-            disabled={bloqueado || demanda === 0}
+            disabled={simulando}
             onChange={(e) =>
-              setDiaDemanda(e.target.value as DiaDemanda)
+              setDiaDemanda(
+                e.target.value as DiaDemanda
+              )
             }
-            className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-normal disabled:opacity-50"
+            className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-3 py-3 font-normal"
           >
-            <option value="ambos">
-              Ambos días
-            </option>
-
-            <option value="primero">
-              Primer día
-            </option>
-
-            <option value="segundo">
-              Segundo día
-            </option>
+            <option value="ambos">Ambos días</option>
+            <option value="primero">Primer día</option>
+            <option value="segundo">Segundo día</option>
           </select>
-
-          <span className="mt-2 block text-xs font-normal text-slate-500">
-            Permite simular un evento o festivo
-            en una jornada concreta.
-          </span>
         </label>
       </div>
+
+      <div className="mt-5 rounded-xl bg-violet-50 p-5">
+        <div className="flex items-center justify-between gap-3">
+          <label
+            htmlFor="demanda-flotiq"
+            className="text-sm font-semibold text-violet-950"
+          >
+            Variación de demanda
+          </label>
+
+          <span className="text-xl font-bold tabular-nums text-violet-950">
+            {demanda > 0 ? "+" : ""}
+            {demanda} %
+          </span>
+        </div>
+
+        <input
+          id="demanda-flotiq"
+          type="range"
+          min={-30}
+          max={maximo ?? 0}
+          step={1}
+          value={demanda}
+          onChange={(e) =>
+            setDemanda(Number(e.target.value))
+          }
+          disabled={bloqueado}
+          className="mt-4 w-full accent-violet-600 disabled:opacity-50"
+        />
+
+        <div className="mt-2 flex justify-between text-xs text-violet-700">
+          <span>−30 %</span>
+
+          <span>
+            {calculandoLimite
+              ? "Calculando capacidad…"
+              : maximo === null
+              ? "Capacidad no disponible"
+              : `Máximo viable: +${maximo} %`}
+          </span>
+        </div>
+      </div>
+
+      <p className="mt-2 text-xs text-slate-500">
+        Para comparar una fecha entre dos planes,
+        selecciona ese día en cada ventana.
+      </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={ejecutarSimulacion}
-          disabled={
-            bloqueado ||
-            modelos.length === 0 ||
-            !modelos.some(
-              (m) => m.id === modelo && m.disponible
-            )
-          }
-          className="rounded-xl bg-violet-600 px-5 py-3 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={bloqueado}
+          onClick={aplicar}
+          className="rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {calculando
-            ? "Calculando escenario..."
-            : "Recalcular planificación"}
+          {simulando
+            ? "Calculando escenario…"
+            : "Aplicar simulación"}
         </button>
 
-        <button
-          type="button"
-          onClick={restaurar}
-          disabled={bloqueado}
-          className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-        >
-          Volver al plan original
-        </button>
+        <span className="text-xs text-slate-500">
+          {planActivo}
+        </span>
       </div>
 
-      {calculando && (
-        <p className="mt-3 text-sm text-slate-500">
-          El optimizador está calculando una nueva
-          planificación. El plan anterior se conserva
-          hasta que termine correctamente.
+      {mensaje && (
+        <p className="mt-3 text-xs text-slate-500">
+          {mensaje}
         </p>
       )}
-
-      {error && (
-        <p
-          role="alert"
-          className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
-        >
-          {error}
-        </p>
-      )}
-
-      <p className="mt-4 text-xs leading-5 text-slate-500">
-        El ajuste de demanda modifica el consumo
-        energético simulado. No cambia automáticamente
-        el número de viajes ni los turnos.
-        Los nuevos planes no sobrescriben los originales.
-      </p>
     </section>
   );
 }

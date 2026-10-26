@@ -225,33 +225,52 @@ def resumen_48h(fecha_consulta: date):
 
 # Prediccion de precios hora a hora
 
+
 @router.get('/{fecha_consulta}/precios')
 def precios_48h(fecha_consulta: date):
 
+    # Devuelve el precio realmente aplicado al plan,
+    # incluido el día conservado de la ejecución anterior.
+
     datos = _leer_tabla(
-        _ruta('precios', fecha_consulta.isoformat()),
+        _ruta('plan', fecha_consulta.isoformat()),
         {
             'datetime_utc',
             'precio_predicho_eur_mwh',
         },
     ).sort_values('datetime_utc')
 
-    registros = []
+    horarios = (
+        datos.groupby('datetime_utc')[
+            'precio_predicho_eur_mwh'
+        ]
+        .agg(['min', 'max', 'first'])
+        .reset_index()
+    )
 
-    for fila in datos.itertuples(index=False):
+    if (
+        (horarios['max'] - horarios['min']).abs()
+        > 1e-5
+    ).any():
+        raise HTTPException(
+            status_code=500,
+            detail='Precios aplicados inconsistentes',
+        )
 
-        registros.append({
-            'fecha_local': _hora_local(fila.datetime_utc),
+    registros = [
+        {
+            'fecha_local': _hora_local(f.datetime_utc),
             'precio_predicho_eur_mwh': round(
-                float(fila.precio_predicho_eur_mwh),
-                4,
+                float(f.first), 4
             ),
-        })
+        }
+        for f in horarios.itertuples(index=False)
+    ]
 
     return {
         'fecha_consulta': fecha_consulta.isoformat(),
-        'tipo_datos': 'prediccion_ml',
-        'horas': len(datos),
+        'tipo_datos': 'precio_aplicado_al_plan',
+        'horas': len(registros),
         'registros': registros,
     }
 

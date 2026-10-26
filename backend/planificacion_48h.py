@@ -10,6 +10,12 @@ from zoneinfo import ZoneInfo
 import math
 import pandas as pd
 
+from backend.consistencia_diaria import (
+    optimizar_48h_consistente,
+    publicar_consistente,
+)
+
+
 from backend.optimizador import (
     optimizar_recargas,
     CAPACIDAD_BATERIA_KWH,
@@ -302,18 +308,18 @@ def planificar_48h(fecha_consulta, tiempo_maximo=180):
 
     # Optimizar con reserva intermedia flexible
 
-    resultado = optimizar_recargas(
-        datos_operativos=datos_operativos,
-        precios_horarios=precios_horarios,
-        energia_final_objetivo=energia_objetivo,
-        energia_inicial_vehiculos=energia_inicial,
-        tiempo_maximo_segundos=tiempo_maximo,
-        objetivo_final_flexible=True,
-        penalizacion_deficit_eur_kwh=1.0,
-        indice_fin_primer_dia=indice_fin_primer_dia,
-        soc_objetivo_intermedio=0.40,
-        penalizacion_intermedia_eur_kwh=2.0,
-    )
+    resultado, precios_horarios, info_consistencia = (
+        optimizar_48h_consistente(
+            fecha_consulta=fecha_consulta,
+            datos_operativos=datos_operativos,
+            precios_horarios=precios_horarios,
+            energia_final_objetivo=energia_objetivo,
+            energia_inicial_vehiculos=energia_inicial,
+            tiempo_maximo_segundos=tiempo_maximo,
+            soc_objetivo_primer_dia=0.60,
+            penalizacion_intermedia_eur_kwh=0.25,
+        )
+      )
 
     print(
         'Deficit objetivo intermedio:',
@@ -400,11 +406,6 @@ def planificar_48h(fecha_consulta, tiempo_maximo=180):
         f"planificacion_ml_48h_{fecha_texto}.parquet"
     )
 
-    plan.to_parquet(
-        ruta_salida,
-        index=False,
-    )
-
     resumen = {
         "fecha_consulta": fecha_texto,
         "fecha_inicio": str(inicio),
@@ -435,17 +436,13 @@ def planificar_48h(fecha_consulta, tiempo_maximo=180):
             "confirmados en tiempo real."
         ),
     }
-
-    ruta_json = ruta_salida.with_suffix(".json")
-
-    ruta_json.write_text(
-        json.dumps(
-            resumen,
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    ruta_salida = publicar_consistente(
+        plan=plan,
+        resumen=resumen,
+        fecha=fecha_consulta,
+        info=info_consistencia,
     )
+
 
     # -------------------------------------------
     # 7. MOSTRAR RESULTADOS

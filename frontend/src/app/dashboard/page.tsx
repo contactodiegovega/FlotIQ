@@ -284,6 +284,8 @@ export default function DashboardPage() {
 
   const [fechas, setFechas] = useState<string[]>([]);
   const [fechaConsulta, setFechaConsulta] = useState("");
+  const [fechaHistorial, setFechaHistorial] = useState('');
+  const [errorHistorial, setErrorHistorial] = useState(false);
 
   const [datos, setDatos] = useState<Datos | null>(null);
 
@@ -625,42 +627,94 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          <label className="text-sm font-semibold text-slate-700">
+          <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
 
-            Plan disponible
-
-            <select
-              className="mt-2 block w-full min-w-[170px] rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              value={fechaConsulta}
-              disabled={simulando || cargando}
-              onChange={(e) => {
-                setFechaConsulta(
-                  e.target.value
-                );
-                setDatos(null);
-                setCargando(true);
-              }}
-            >
-              {fechas.map((fecha) => (
-                <option
-                  key={fecha}
-                  value={fecha}
-                >
-                  {fechaPlan(fecha, 1)}
-                  {" y "}
-                  {fechaPlan(fecha, 2)}
-                </option>
-              ))}
-            </select>
-
-            <p className="mt-2 text-xs font-normal text-slate-500">
-              Fecha de referencia:{" "}
-              {fechaConsulta || "—"}
-              {" · "}
-              Escenario simulado
+            <p className="text-xs font-bold uppercase tracking-wide text-violet-600">
+              {fechaConsulta === fechas[0]
+                ? 'Plan vigente'
+                : 'Plan histórico'}
             </p>
 
-          </label>
+            <p className="mt-2 text-lg font-bold text-slate-900">
+              {fechaConsulta
+                ? `${fechaPlan(fechaConsulta, 1)} y ${fechaPlan(fechaConsulta, 2)}`
+                : 'Sin planificación disponible'}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              {fechaConsulta
+                ? `Emitido el ${fechaPlan(fechaConsulta, 0)} · Escenario simulado`
+                : 'No hay planes cargados'}
+            </p>
+
+            {fechaConsulta &&
+              fechas[0] &&
+              fechaConsulta !== fechas[0] && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFechaConsulta(fechas[0]);
+                    setDatos(null);
+                    setCargando(true);
+                  }}
+                  className="mt-3 text-sm font-semibold text-violet-700 hover:underline"
+                >
+                  ← Volver al plan vigente
+                </button>
+              )}
+
+            {fechas.length > 1 && (
+              <details className="mt-4 border-t border-slate-100 pt-3">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-600 hover:text-violet-700">
+                  Consultar historial
+                </summary>
+
+                <div className="mt-4 space-y-3">
+                  <label className="block text-xs font-medium text-slate-500">
+                    Fecha de emisión
+                  </label>
+
+                  <input
+                    type="date"
+                    value={fechaHistorial}
+                    min={fechas[fechas.length - 1]}
+                    max={fechas[0]}
+                    onChange={(e) => {
+                      setFechaHistorial(e.target.value);
+                      setErrorHistorial(false);
+                    }}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!fechas.includes(fechaHistorial)) {
+                        setErrorHistorial(true);
+                        return;
+                      }
+
+                      setErrorHistorial(false);
+                      setFechaConsulta(fechaHistorial);
+                      setDatos(null);
+                      setCargando(true);
+                    }}
+                    className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-700"
+                  >
+                    Cargar planificación histórica
+                  </button>
+
+                  {errorHistorial && (
+                    <p className="text-xs text-red-600">
+                      No existe una planificación disponible
+                      para esa fecha de emisión.
+                    </p>
+                  )}
+                </div>
+              </details>
+            )}
+          </div>
+
         </div>
 
         {/* SELECTOR DE MODELO Y DEMANDA */}

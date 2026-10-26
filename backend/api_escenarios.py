@@ -4,15 +4,16 @@ from pathlib import Path
 from typing import Literal
 import json
 import math
-from backend.preparacion_automatica import (
-    optimizar_con_preparacion,
-)
+from backend.escenarios_diarios import simular_48h_por_dias
 import joblib
 import numpy as np
 import pandas as pd
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from functools import lru_cache
+from backend.escenarios_diarios import simular_48h_por_dias
 
 from backend.optimizador import (
     optimizar_recargas,
@@ -88,6 +89,7 @@ class SolicitudEscenario(BaseModel):
     ] = "ambos"
 
 
+
 def tabla(ruta: Path, columnas: set[str]):
     if not ruta.is_file():
         raise HTTPException(
@@ -97,23 +99,16 @@ def tabla(ruta: Path, columnas: set[str]):
 
     try:
         datos = pd.read_parquet(ruta)
-
     except (OSError, ValueError) as error:
         raise HTTPException(
             status_code=422,
             detail=f"No se pudo leer {ruta.name}: {error}",
         )
 
-    if datos.empty:
+    if datos.empty or not columnas.issubset(datos.columns):
         raise HTTPException(
             status_code=422,
-            detail=f"El archivo está vacío: {ruta.name}",
-        )
-
-    if not columnas.issubset(datos.columns):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Faltan columnas en {ruta.name}",
+            detail=f"Datos incompletos en {ruta.name}",
         )
 
     if datos[list(columnas)].isna().any().any():
@@ -122,26 +117,14 @@ def tabla(ruta: Path, columnas: set[str]):
             detail=f"Hay valores nulos en {ruta.name}",
         )
 
-    try:
-        datos["datetime_utc"] = pd.to_datetime(
-            datos["datetime_utc"],
-            utc=True,
-            errors="raise",
-        )
-
-    except (TypeError, ValueError) as error:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Fechas inválidas en {ruta.name}: {error}",
-        )
-
-    if datos["datetime_utc"].isna().any():
-        raise HTTPException(
-            status_code=422,
-            detail=f"Fechas vacías en {ruta.name}",
-        )
+    datos["datetime_utc"] = pd.to_datetime(
+        datos["datetime_utc"],
+        utc=True,
+        errors="raise",
+    )
 
     return datos
+
 
 
 def horas_esperadas(fecha: date):
@@ -296,7 +279,13 @@ def cargar_precios(modelo: str, predicciones, horas):
     return pronostico
 
 
+
 def baterias_inicio(fecha: date, vehiculos: list[str]):
+    
+    # Recupera los estados iniciales de los vehiculos.
+
+    from backend.optimizador import EFICIENCIA_CARGA
+
     inicio = (
         fecha + timedelta(days=1)
     ).isoformat()
@@ -305,40 +294,163 @@ def baterias_inicio(fecha: date, vehiculos: list[str]):
         f"estado_baterias_{inicio}.json"
     )
 
-    if not ruta.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail=f"No existe el estado inicial {ruta.name}",
+    minimo = CAPACIDAD_BATERIA_KWH * SOC_MINIMO
+    maximo = CAPACIDAD_BATERIA_KWH * SOC_OBJETIVO
+
+    # CASO 1: EXISTE EL JSON DE CONTINUIDAD
+
+    if ruta.is_file():
+
+        try:
+            estado = json.loads(
+                ruta.read_text(encoding="utf-8")
+            )
+
+        except (OSError, json.JSONDecodeError):
+            raise HTTPException(
+                status_code=422,
+                detail="No se puede leer el estado de baterias",
+            )
+
+        fecha_origen = (
+            fecha - timedelta(days=1)
+        ).isoformat()
+
+        if (
+            estado.get("fecha_inicio_siguiente_plan") != inicio
+            or estado.get("fecha_plan_origen") != fecha_origen
+            or estado.get("tipo_estado") != "estimado_por_simulacion"
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="La continuidad de baterias no coincide",
+            )
+
+        valores = estado.get(
+            "energia_inicial_vehiculos"
         )
 
-    try:
-        estado = json.loads(
-            ruta.read_text(encoding="utf-8")
+    # CASO 2: FALTA EL JSON
+    # Reconstruir a partir del plan oficial guardado.
+
+    else:
+
+        ruta_plan = PROCESSED / (
+            f"planificacion_ml_48h_{fecha.isoformat()}.parquet"
         )
 
-    except (OSError, json.JSONDecodeError):
-        raise HTTPException(
-            status_code=422,
-            detail="No se puede leer el estado de baterías",
+        if not ruta_plan.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No existe el estado inicial ni el "
+                    f"plan de referencia {ruta_plan.name}"
+                ),
+            )
+
+        plan = pd.read_parquet(ruta_plan)
+
+        columnas = {
+            "datetime_utc",
+            "vehicle_id",
+            "energia_bateria_kwh",
+            "energia_consumida_kwh",
+            "recarga_red_kwh",
+        }
+
+        if not columnas.issubset(plan.columns):
+            raise HTTPException(
+                status_code=422,
+                detail="Faltan columnas de bateria en el plan",
+            )
+
+        plan["datetime_utc"] = pd.to_datetime(
+            plan["datetime_utc"],
+            utc=True,
+            errors="coerce",
         )
 
-    fecha_origen = (
-        fecha - timedelta(days=1)
-    ).isoformat()
-
-    if (
-        estado.get("fecha_inicio_siguiente_plan") != inicio
-        or estado.get("fecha_plan_origen") != fecha_origen
-        or estado.get("tipo_estado") != "estimado_por_simulacion"
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="La continuidad de baterías no coincide",
+        plan["vehicle_id"] = (
+            plan["vehicle_id"].astype(str)
         )
 
-    valores = estado.get(
-        "energia_inicial_vehiculos"
-    )
+        hora_inicio = pd.Timestamp(
+            fecha + timedelta(days=1),
+            tz="Europe/Madrid",
+        ).tz_convert("UTC")
+
+        primeras = plan.loc[
+            plan["datetime_utc"] == hora_inicio
+        ].copy()
+
+        if (
+            len(primeras) != len(vehiculos)
+            or primeras["vehicle_id"].duplicated().any()
+            or set(primeras["vehicle_id"]) != set(vehiculos)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "El plan no contiene estados "
+                    "iniciales completos"
+                ),
+            )
+
+        valores = {}
+
+        for fila in primeras.itertuples(index=False):
+
+            try:
+                energia_final = float(
+                    fila.energia_bateria_kwh
+                )
+
+                consumo = float(
+                    fila.energia_consumida_kwh
+                )
+
+                recarga = float(
+                    fila.recarga_red_kwh
+                )
+
+                # Balance de la primera hora:
+                # final = inicial - consumo
+                #         + recarga * eficiencia
+
+                energia_inicial = (
+                    energia_final
+                    + consumo
+                    - recarga * EFICIENCIA_CARGA
+                )
+
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Datos energeticos invalidos "
+                        f"para {fila.vehicle_id}"
+                    ),
+                )
+
+            if (
+                not math.isfinite(energia_inicial)
+                or not math.isfinite(energia_final)
+                or not math.isfinite(consumo)
+                or not math.isfinite(recarga)
+                or consumo < 0
+                or recarga < -0.002
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Balance energetico invalido "
+                        f"para {fila.vehicle_id}"
+                    ),
+                )
+
+            valores[fila.vehicle_id] = energia_inicial
+
+    # VALIDAR LOS 50 ESTADOS RECUPERADOS
 
     if (
         not isinstance(valores, dict)
@@ -346,20 +458,13 @@ def baterias_inicio(fecha: date, vehiculos: list[str]):
     ):
         raise HTTPException(
             status_code=422,
-            detail="Los estados iniciales están incompletos",
+            detail="Los estados iniciales estan incompletos",
         )
-
-    minimo = (
-        CAPACIDAD_BATERIA_KWH * SOC_MINIMO
-    )
-
-    maximo = (
-        CAPACIDAD_BATERIA_KWH * SOC_OBJETIVO
-    )
 
     energias = {}
 
     for vehiculo in vehiculos:
+
         try:
             energia = float(
                 valores[vehiculo]
@@ -369,26 +474,31 @@ def baterias_inicio(fecha: date, vehiculos: list[str]):
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "Batería inicial no válida para "
+                    "Bateria inicial no valida para "
                     f"{vehiculo}"
                 ),
             )
 
         if (
             not math.isfinite(energia)
-            or not minimo <= energia <= maximo
+            or energia < minimo - 0.002
+            or energia > maximo + 0.002
         ):
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "Batería inicial fuera de límites: "
+                    "Bateria inicial fuera de limites: "
                     f"{vehiculo}"
                 ),
             )
 
-        energias[vehiculo] = energia
+        energias[vehiculo] = min(
+            max(energia, minimo),
+            maximo,
+        )
 
     return energias
+
 
 
 def calendario_operativo(plan, horas, vehiculos):
@@ -399,8 +509,15 @@ def calendario_operativo(plan, horas, vehiculos):
 
     entradas = []
     previos = {}
+    fecha_actual = None
 
     for hora in horas:
+        fecha_de_hora = hora.tz_convert(TZ).date()
+
+        if fecha_de_hora != fecha_actual:
+            previos = {}
+            fecha_actual = fecha_de_hora
+
         grupo = (
             plan.loc[
                 plan["datetime_utc"] == hora
@@ -502,6 +619,181 @@ def calendario_operativo(plan, horas, vehiculos):
         )
 
     return entradas, cargadores
+
+
+# -----------------------------------------
+# LIMITE AUTOMATICO DE DEMANDA VIABLE
+# -----------------------------------------
+
+MAXIMO_DEMANDA_ANALIZADO = 50
+
+
+@lru_cache(maxsize=128)
+def calcular_limite_ventana(
+    fecha: date,
+    modelo: str,
+    dia_demanda: str,
+) -> int:
+    """
+    Busca el mayor incremento porcentual entero
+    que consigue resolver el simulador.
+
+    Guarda en cache los resultados por fecha,
+    modelo y dia seleccionado.
+    """
+
+    ruta_plan = PROCESSED / (
+        f"planificacion_ml_48h_{fecha.isoformat()}.parquet"
+    )
+
+    if not ruta_plan.is_file():
+        raise ValueError(
+            f"No existe el plan {ruta_plan.name}"
+        )
+
+    vehiculos = sorted(
+        pd.read_parquet(
+            ruta_plan,
+            columns=["vehicle_id"],
+        )["vehicle_id"]
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    if len(vehiculos) != 50:
+        raise ValueError(
+            "El plan no contiene los 50 vehiculos"
+        )
+
+    def es_viable(porcentaje: int) -> bool:
+
+        try:
+            resultado, _, _ = simular_48h_por_dias(
+                fecha_consulta=fecha,
+                vehiculos=vehiculos,
+                modelo=modelo,
+                cambio_demanda_pct=porcentaje,
+                dia_demanda=dia_demanda,
+                resolver_precios=cargar_precios,
+            )
+
+            return bool(
+                resultado["factibilidad_validada"]
+            )
+
+        except RuntimeError as error:
+            mensaje = str(error).lower()
+
+            # Solo interpretar como falta de capacidad
+            # una inviabilidad confirmada por CBC.
+            # Otros problemas deben seguir siendo errores
+            # tecnicos y no ocultarse como falta de carga.
+
+            if "cbc: infeasible" in mensaje:
+                return False
+
+            raise
+
+    # Comprobar escenario original.
+
+    if not es_viable(0):
+        raise RuntimeError(
+            "El escenario base no es viable"
+        )
+
+    # Si el extremo superior es viable,
+    # podemos ofrecer todo el rango.
+
+    if es_viable(MAXIMO_DEMANDA_ANALIZADO):
+        return MAXIMO_DEMANDA_ANALIZADO
+
+    # Buscar mediante biseccion entre 0 y 50.
+    # Los consumos aumentan de forma uniforme.
+
+    inferior = 0
+    superior = MAXIMO_DEMANDA_ANALIZADO
+
+    while superior - inferior > 1:
+
+        medio = (inferior + superior) // 2
+
+        if es_viable(medio):
+            inferior = medio
+        else:
+            superior = medio
+
+    return inferior
+
+
+def calcular_limite_comparable(
+    fecha: date,
+    modelo: str,
+    dia_demanda: str,
+) -> int:
+    """
+    Para un solo dia, respeta tambien el limite
+    de la otra ventana donde aparece esa fecha.
+    """
+
+    maximo = calcular_limite_ventana(
+        fecha, modelo, dia_demanda
+    )
+
+    if dia_demanda == "primero":
+
+        fecha_otra = fecha - timedelta(days=1)
+        modo_otro = "segundo"
+
+    elif dia_demanda == "segundo":
+
+        fecha_otra = fecha + timedelta(days=1)
+        modo_otro = "primero"
+
+    else:
+        return maximo
+
+    ruta_otra = PROCESSED / (
+        f"planificacion_ml_48h_"
+        f"{fecha_otra.isoformat()}.parquet"
+    )
+
+    if ruta_otra.is_file():
+        maximo = min(
+            maximo,
+            calcular_limite_ventana(
+                fecha_otra,
+                modelo,
+                modo_otro,
+            ),
+        )
+
+    return maximo
+
+
+@router.get("/limite-demanda")
+def limite_demanda(
+    fecha_consulta: date,
+    modelo: Literal[
+        "baseline", "hgb", "ridge", "rf", "xgb"
+    ] = "hgb",
+    dia_demanda: Literal[
+        "ambos", "primero", "segundo"
+    ] = "ambos",
+):
+    maximo = calcular_limite_comparable(
+        fecha_consulta,
+        modelo,
+        dia_demanda,
+    )
+
+    return {
+        "fecha_consulta": fecha_consulta.isoformat(),
+        "modelo": modelo,
+        "dia_demanda": dia_demanda,
+        "minimo_pct": -30,
+        "maximo_pct": maximo,
+    }
 
 
 @router.get("/modelos")
@@ -631,133 +923,56 @@ def simular(solicitud: SolicitudEscenario):
             detail="Hay consumos negativos o no válidos",
         )
 
+  
     # -----------------------------------------
-    # 2. SELECCIONAR MODELO DE PRECIOS
+    # 2-4. ESCENARIOS CON REFERENCIA DIARIA
     # -----------------------------------------
-
-    precios_predichos = cargar_precios(
-        solicitud.modelo,
-        predicciones,
-        horas,
-    )
-
-    precios_opt = pd.DataFrame({
-        "hora": horas,
-        "price_eur_mwh": precios_predichos,
-    })
-
-    # -----------------------------------------
-    # 3. SIMULAR EL CAMBIO DE DEMANDA
-    # -----------------------------------------
-
-    datos_opt = operaciones[
-        [
-            "vehicle_id",
-            "datetime_utc",
-            "disponible_carga",
-            "energia_consumida_kwh",
-        ]
-    ].copy()
-
-    primer_dia = (
-        fecha + timedelta(days=1)
-    )
-
-    segundo_dia = (
-        fecha + timedelta(days=2)
-    )
-
-    fechas_locales = (
-        datos_opt["datetime_utc"]
-        .dt.tz_convert(TZ)
-        .dt.date
-    )
-
-    if solicitud.dia_demanda == "primero":
-        filtro = (
-            fechas_locales == primer_dia
-        )
-
-    elif solicitud.dia_demanda == "segundo":
-        filtro = (
-            fechas_locales == segundo_dia
-        )
-
-    else:
-        filtro = pd.Series(
-            True,
-            index=datos_opt.index,
-        )
-
-    factor_demanda = (
-        1 + solicitud.cambio_demanda_pct / 100
-    )
-
-    datos_opt.loc[
-        filtro,
-        "energia_consumida_kwh",
-    ] *= factor_demanda
-
-    datos_opt = datos_opt.rename(
-        columns={
-            "datetime_utc": "hora"
-        }
-    )
-
-    # -----------------------------------------
-    # 4. ESTADOS INICIALES Y OPTIMIZACION
-    # -----------------------------------------
-
-    energia_inicial = baterias_inicio(
-        fecha,
-        vehiculos,
-    )
-
-    objetivos = {
-        vehiculo: (
-            CAPACIDAD_BATERIA_KWH * SOC_OBJETIVO
-        )
-        for vehiculo in vehiculos
-    }
-
-    horas_primer_dia = sum(
-        hora.tz_convert(TZ).date() == primer_dia
-        for hora in horas
-    )
 
     try:
-        resultado = optimizar_con_preparacion(
-            fecha_consulta=fecha,
-            cambio_demanda_pct=solicitud.cambio_demanda_pct,
-            datos_operativos=datos_opt,
-            precios_horarios=precios_opt,
-            energia_final_objetivo=objetivos,
-            energia_inicial_vehiculos=energia_inicial,
-            tiempo_maximo_segundos=180,
-            objetivo_final_flexible=True,
-            penalizacion_deficit_eur_kwh=1.0,
-            indice_fin_primer_dia=horas_primer_dia,
-            soc_objetivo_intermedio=0.4,
-            penalizacion_intermedia_eur_kwh=2.0,
+        resultado, datos_opt, precios_opt = (
+            simular_48h_por_dias(
+                fecha_consulta=fecha,
+                vehiculos=vehiculos,
+                modelo=solicitud.modelo,
+                cambio_demanda_pct=(
+                    solicitud.cambio_demanda_pct
+                ),
+                dia_demanda=solicitud.dia_demanda,
+                resolver_precios=cargar_precios,
+            )
         )
 
     except (ValueError, RuntimeError) as error:
         raise HTTPException(
             status_code=422,
-            detail=f"No se pudo optimizar: {error}",
+            detail=(
+                "Escenario inconsistente o inviable: "
+                f"{error}"
+            ),
         )
 
-    if not resultado.get(
-        "factibilidad_validada"
-    ):
+    if not resultado.get("factibilidad_validada"):
         raise HTTPException(
             status_code=422,
             detail=(
                 "El escenario no tiene una "
-                "solución validada"
+                "solucion validada"
             ),
         )
 
+    precios_predichos = (
+        precios_opt.set_index("hora")["price_eur_mwh"]
+        .reindex(horas)
+        .to_numpy(dtype=float)
+    )
+
+    primer_dia = fecha + timedelta(days=1)
+    segundo_dia = fecha + timedelta(days=2)
+
+    horas_primer_dia = sum(
+        hora.tz_convert(TZ).date() == primer_dia
+        for hora in horas
+    )
     # -----------------------------------------
     # 5. PREPARAR PLAN DE VEHICULOS
     # -----------------------------------------
@@ -1033,3 +1248,21 @@ def simular(solicitud: SolicitudEscenario):
         "preparacion_anticipada"
         ),
     }
+
+    # Impedir solicitar demanda superior al limite
+    # verificado para esta fecha y escenario.
+
+    if solicitud.cambio_demanda_pct > 0:
+
+        maximo_viable = calcular_limite_comparable(
+            solicitud.fecha_consulta,
+            solicitud.modelo,
+            solicitud.dia_demanda,
+        )
+
+        if solicitud.cambio_demanda_pct > maximo_viable:
+            solicitud = solicitud.model_copy(
+                update={
+                    "cambio_demanda_pct": maximo_viable
+                }
+            )
