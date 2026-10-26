@@ -5,7 +5,6 @@ on:
   schedule:
     - cron: "17 10 * * *"
       timezone: "Europe/Madrid"
-
   workflow_dispatch:
 
 permissions:
@@ -17,18 +16,37 @@ concurrency:
 
 jobs:
   planificar:
-    name: Generar planificacion
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
+
+    env:
+      TZ: Europe/Madrid
+      PYTHONUNBUFFERED: "1"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
 
     steps:
-      # 1. Descargar el repositorio
+      # 1. Descargar codigo
       - name: Descargar proyecto
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      # 2. Configurar Python
+      # 2. Preparar credenciales privadas
+      - name: Configurar variables privadas
+        shell: bash
+        env:
+          FLOTIQ_ENV: ${{ secrets.FLOTIQ_ENV }}
+        run: |
+          if [ -z "$FLOTIQ_ENV" ]; then
+            echo "::error::Falta el secreto FLOTIQ_ENV en GitHub"
+            exit 1
+          fi
+
+          printf '%s\n' "$FLOTIQ_ENV" > .env
+          chmod 600 .env
+          echo "Variables privadas configuradas"
+
+      # 3. Preparar Python
       - name: Preparar Python
         uses: actions/setup-python@v5
         with:
@@ -36,75 +54,258 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      # 3. Instalar CBC y dependencias necesarias
+      # 4. Instalar dependencias de Linux
       - name: Instalar dependencias
+        shell: bash
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y coinor-cbc
 
-          python -m pip install --upgrade pip
+          python - <<'PY'
+          from pathlib import Path
 
-           python -m pip install python-dotenv==1.2.4
+          origen = Path("requirements.txt")
+          destino = Path("/tmp/flotiq-requirements-linux.txt")
+
+          lineas = origen.read_text(
+              encoding="utf-8"
+          ).splitlines()
+
+          compatibles = [
+              linea
+              for linea in lineas
+              if not linea.strip().lower().startswith(
+                  "pywinpty"
+              )
+          ]
+
+          destino.write_text(
+              "\n".join(compatibles) + "\n",
+              encoding="utf-8",
+          )
+
+          print("Dependencias Linux preparadas")
+          PY
 
           python -m pip install \
-            numpy==2.5.4 \
-            pandas==3.0.6 \
-            pyarrow==26.0.0 \
-            scikit-learn==1.9.1 \
-            joblib==1.6.0 \
-            requests==2.34.2 \
-            beautifulsoup4 \
-            "pulp>=4,<5"
-          
+            -r /tmp/flotiq-requirements-linux.txt \
+            "pulp>=4,<5" \
+            "psycopg2-binary>=2.9,<3"
 
-      # 4. Comprobar que Python y CBC funcionan
+      # 5. Comprobar imports y CBC
       - name: Verificar entorno
+        shell: bash
         run: |
-          python --version
-          cbc -stop
-          python -c "import pandas, numpy, sklearn, pulp, pyarrow, joblib; print('Dependencias principales OK')"
+          python -m compileall -q backend
 
-      # 5. Generar la planificacion del dia
-      - name: Generar plan diario
+          python - <<'PY'
+          import importlib
+          import pulp
+
+          modulos = [
+              "backend.actualizar_precios",
+              "backend.prediccion_48h",
+              "backend.prevision_operaciones_48h",
+              "backend.planificacion_48h",
+              "backend.continuidad_baterias",
+          ]
+
+          for modulo in modulos:
+              importlib.import_module(modulo)
+              print("OK:", modulo)
+
+          modelo = pulp.LpProblem(
+              "prueba_cbc", pulp.LpMinimize
+          )
+          variable = modelo.add_variable(
+              "x", lowBound=0
+          )
+
+          modelo += variable
+          modelo += variable >= 1
+
+          resultado = modelo.solve(
+              pulp.COIN_CMD(msg=False)
+          )
+
+          if not resultado.has_solution:
+              raise RuntimeError(
+                  "CBC no ha resuelto la prueba"
+              )
+
+          print("CBC funcionando correctamente")
+          PY
+
+      # 6. Validar archivos iniciales
+      - name: Comprobar datos necesarios
         shell: bash
         run: |
           FECHA=$(TZ=Europe/Madrid date +%F)
+          DIA_INICIO=$(TZ=Europe/Madrid date -d "$FECHA +1 day" +%F)
 
-          echo "FLOTIQ - Fecha de consulta: $FECHA"
+          echo "FECHA=$FECHA" >> "$GITHUB_ENV"
 
+          for archivo in \
+            models/modelo_precio_hgb.joblib \
+            data/processed/omie_ml_hourly.parquet \
+            data/processed/omie_precios_actualizados.parquet \
+            "data/processed/estado_baterias_${DIA_INICIO}.json"
+          do
+            if [ ! -s "$archivo" ]; then
+              echo "::error::Falta el archivo: $archivo"
+              exit 1
+            fi
+          done
+
+          echo "Datos iniciales comprobados"
+          echo "Fecha: $FECHA"
+
+      # 7. Ejecutar pipeline diario
+      - name: Generar plan diario
+        shell: bash
+        run: |
           PLAN="data/processed/planificacion_ml_48h_${FECHA}.parquet"
 
           if [ -f "$PLAN" ]; then
-            echo "El plan de hoy ya existe."
-            echo "No se recalcula."
+            echo "El plan ya existe. Se verificara."
           else
             python -m backend.pipeline_diario \
               --fecha-consulta "$FECHA"
           fi
 
-      # 6. Guardar los resultados en GitHub
-      - name: Guardar resultados
+      # 8. Verificar resultado generado
+      - name: Validar planificacion
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          import pandas as pd
+
+          fecha = date.fromisoformat(os.environ["FECHA"])
+          texto = fecha.isoformat()
+          base = Path("data/processed")
+
+          ruta_plan = base / (
+              f"planificacion_ml_48h_{texto}.parquet"
+          )
+          ruta_meta = base / (
+              f"planificacion_ml_48h_{texto}.json"
+          )
+          ruta_estado = base / (
+              "estado_baterias_"
+              f"{(fecha + timedelta(days=2)).isoformat()}.json"
+          )
+
+          for ruta in (
+              ruta_plan, ruta_meta, ruta_estado
+          ):
+              if not ruta.is_file():
+                  raise FileNotFoundError(
+                      f"Resultado incompleto: {ruta}"
+                  )
+
+          meta = json.loads(
+              ruta_meta.read_text(encoding="utf-8")
+          )
+          estado = json.loads(
+              ruta_estado.read_text(encoding="utf-8")
+          )
+
+          if (
+              meta.get("fecha_consulta") != texto
+              or meta.get("factibilidad_validada") is not True
+          ):
+              raise RuntimeError(
+                  "La planificacion no esta validada"
+              )
+
+          if (
+              estado.get("fecha_plan_origen") != texto
+              or estado.get("tipo_estado")
+              != "estimado_por_simulacion"
+              or len(
+                  estado.get("energia_inicial_vehiculos", {})
+              ) != 50
+          ):
+              raise RuntimeError(
+                  "Continuidad de baterias incorrecta"
+              )
+
+          inicio = pd.Timestamp(
+              fecha + timedelta(days=1),
+              tz="Europe/Madrid",
+          )
+          fin = pd.Timestamp(
+              fecha + timedelta(days=3),
+              tz="Europe/Madrid",
+          )
+
+          horas = pd.date_range(
+              inicio.tz_convert("UTC"),
+              fin.tz_convert("UTC"),
+              freq="h",
+              inclusive="left",
+          )
+
+          plan = pd.read_parquet(ruta_plan)
+
+          marcas = pd.to_datetime(
+              plan["datetime_utc"], utc=True
+          )
+
+          if (
+              len(plan) != 50 * len(horas)
+              or plan["vehicle_id"].nunique() != 50
+              or plan.duplicated(
+                  ["vehicle_id", "datetime_utc"]
+              ).any()
+              or set(marcas) != set(horas)
+          ):
+              raise RuntimeError(
+                  "La matriz de planificacion esta incompleta"
+              )
+
+          print("PLAN VALIDADO")
+          print("Fecha:", texto)
+          print("Vehiculos: 50")
+          print("Horas:", len(horas))
+          print(
+              "Coste estimado:",
+              meta.get("coste_estimado_eur"),
+          )
+          PY
+
+      # 9. Guardar resultados en GitHub
+      - name: Publicar resultados
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add -f data/processed/omie_precios_actualizados.parquet
+          shopt -s nullglob
 
-          git add -f data/processed/planificacion_ml_48h_*.parquet
-          git add -f data/processed/planificacion_ml_48h_*.json
+          archivos=(
+            data/processed/omie_precios_actualizados.parquet
+            data/processed/planificacion_ml_48h_*.parquet
+            data/processed/planificacion_ml_48h_*.json
+            data/processed/estado_baterias_*.json
+            data/processed/prediccion_ml_48h_emitida_*.parquet
+            data/processed/prediccion_ml_48h_emitida_*.json
+            data/processed/prevision_operaciones_48h_emitida_*.parquet
+            data/processed/prevision_operaciones_48h_emitida_*.json
+          )
 
-          git add -f data/processed/estado_baterias_*.json
-
-          git add -f data/processed/prediccion_ml_48h_emitida_*.parquet
-          git add -f data/processed/prediccion_ml_48h_emitida_*.json
-
-          git add -f data/processed/prevision_operaciones_48h_emitida_*.parquet
-          git add -f data/processed/prevision_operaciones_48h_emitida_*.json
+          if [ ${#archivos[@]} -gt 0 ]; then
+            git add -f -- "${archivos[@]}"
+          fi
 
           if ! git diff --cached --quiet; then
             git commit -m "Actualizar planificacion diaria"
-            git push
+            git push origin HEAD:main
           else
-            echo "No hay cambios nuevos."
+            echo "No hay archivos nuevos."
           fi
