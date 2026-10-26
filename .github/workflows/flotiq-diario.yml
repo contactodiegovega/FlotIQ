@@ -44,6 +44,8 @@ jobs:
 
           python -m pip install --upgrade pip
 
+           python -m pip install python-dotenv==1.2.4
+
           python -m pip install \
             numpy==2.5.4 \
             pandas==3.0.6 \
@@ -53,6 +55,7 @@ jobs:
             requests==2.34.2 \
             beautifulsoup4 \
             "pulp>=4,<5"
+          
 
       # 4. Comprobar que Python y CBC funcionan
       - name: Verificar entorno
