@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Literal
 import json
 import math
-
+from backend.preparacion_automatica import (
+    optimizar_con_preparacion,
+)
 import joblib
 import numpy as np
 import pandas as pd
@@ -532,6 +534,7 @@ def simular(solicitud: SolicitudEscenario):
     fecha = solicitud.fecha_consulta
     fecha_texto = fecha.isoformat()
 
+
     horas = horas_esperadas(fecha)
 
     # -----------------------------------------
@@ -723,7 +726,9 @@ def simular(solicitud: SolicitudEscenario):
     )
 
     try:
-        resultado = optimizar_recargas(
+        resultado = optimizar_con_preparacion(
+            fecha_consulta=fecha,
+            cambio_demanda_pct=solicitud.cambio_demanda_pct,
             datos_operativos=datos_opt,
             precios_horarios=precios_opt,
             energia_final_objetivo=objetivos,
@@ -1024,4 +1029,7 @@ def simular(solicitud: SolicitudEscenario):
                 "OMIE no representan la factura final."
             ),
         },
+            "preparacion_anticipada": resultado.get(
+        "preparacion_anticipada"
+        ),
     }
