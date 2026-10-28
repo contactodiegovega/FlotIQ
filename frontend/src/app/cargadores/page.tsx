@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | CENTRO DE CONTROL DE CARGADORES
@@ -67,7 +67,7 @@ export default function CargadoresPage() {
 
       try {
         const respuesta = await fetch(
-          `http://127.0.0.1:8000/api/cargadores/ocupacion?estrategia=${estrategia}`,
+          `/api/cargadores/ocupacion?estrategia=${estrategia}`,
           { signal: controller.signal }
         );
 

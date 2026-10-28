@@ -1,4 +1,4 @@
-
+﻿
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -107,7 +107,7 @@ export default function CalendarioOperativo48h({
     setDatos(null);
 
     fetch(
-      `http://127.0.0.1:8000/api/48h/${fechaConsulta}/calendario`,
+      `/api/48h/${fechaConsulta}/calendario`,
       { signal: control.signal }
     )
       .then(async (respuesta) => {

@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | DASHBOARD DE RESULTADOS HISTORICOS
@@ -40,7 +40,7 @@ export default function ResultadosPage() {
     async function cargarResultados() {
       try {
         const respuesta = await fetch(
-          "http://127.0.0.1:8000/api/resultados/semana"
+          "/api/resultados/semana"
         );
 
         if (!respuesta.ok) {

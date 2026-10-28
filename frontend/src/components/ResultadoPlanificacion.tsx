@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | RESULTADOS DE PLANIFICACION SEMANAL
@@ -57,7 +57,7 @@ export default function ResultadoPlanificacion({
 
       try {
         const respuesta = await fetch(
-          `http://127.0.0.1:8000/api/planificaciones/${semana}/resumen`,
+          `/api/planificaciones/${semana}/resumen`,
           { signal: controller.signal }
         );
 

@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | GENERACION AUTOMATICA DE PLANIFICACIONES
@@ -18,7 +18,7 @@ type RespuestaEstado = {
   error: string | null;
 };
 
-const API = "http://127.0.0.1:8000";
+const API = "";
 
 export default function GenerarPlanificacion({
   semana,

@@ -1,11 +1,10 @@
-
+﻿
 "use client";
 
 import { useEffect, useState } from "react";
 
 const API =
-  process.env.NEXT_PUBLIC_FLOTIQ_API_URL ||
-  "http://127.0.0.1:8000";
+  "";
 
 type Modelo = "baseline" | "hgb" | "ridge" | "rf" | "xgb";
 type DiaDemanda = "primero" | "segundo" | "ambos";

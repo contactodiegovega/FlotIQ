@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | ESCENARIOS ELECTRICOS PARA SEMANAS FUTURAS
@@ -52,7 +52,7 @@ export default function EscenarioPrecios({ semana }: Props) {
 
       try {
         const respuesta = await fetch(
-          `http://127.0.0.1:8000/api/escenarios/precios?fecha=${semana}`,
+          `/api/escenarios/precios?fecha=${semana}`,
           { signal: controller.signal }
         );
 

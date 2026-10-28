@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | CONEXIÓN DE REACT CON FASTAPI
@@ -23,7 +23,7 @@ export default function EstadoFlota() {
     async function cargarFlota() {
       try {
         const respuesta = await fetch(
-          "http://127.0.0.1:8000/api/flota"
+          "/api/flota"
         );
 
         if (!respuesta.ok) {

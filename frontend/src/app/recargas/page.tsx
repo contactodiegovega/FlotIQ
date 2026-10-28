@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | CALENDARIO SEMANAL DE RECARGAS
@@ -82,7 +82,7 @@ function RecargasContenido() {
         });
 
         const respuesta = await fetch(
-          `http://127.0.0.1:8000/api/recargas?${parametros}`,
+          `/api/recargas?${parametros}`,
           { signal: controlador.signal }
         );
 

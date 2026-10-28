@@ -1,4 +1,4 @@
-
+﻿
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -50,7 +50,7 @@ export default function TurnosConductores48h({
     setError('');
 
     fetch(
-      `http://127.0.0.1:8000/api/48h/${fechaConsulta}/conductores`,
+      `/api/48h/${fechaConsulta}/conductores`,
       {
         signal: control.signal,
         cache: 'no-store',

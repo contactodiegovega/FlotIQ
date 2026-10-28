@@ -1,4 +1,4 @@
-
+﻿
 "use client";
 
 // FLOTIQ | VISTA GENERAL DE RECARGAS DE LA FLOTA
@@ -74,7 +74,7 @@ export default function FlotaPage() {
 
       try {
         const respuesta = await fetch(
-          "http://127.0.0.1:8000/api/recargas/flota" +
+          "/api/recargas/flota" +
             `?estrategia=${estrategia}`,
           { signal: controller.signal }
         );
