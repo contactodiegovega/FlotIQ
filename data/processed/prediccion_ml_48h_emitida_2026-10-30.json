@@ -1,0 +1,11 @@
+{
+  "fecha_emision": "2026-10-30",
+  "horizonte_inicio_local": "2026-10-31 00:00:00+01:00",
+  "horizonte_fin_exclusivo_local": "2026-11-02 00:00:00+01:00",
+  "horas": 48,
+  "primera_fecha_omie_disponible_utc": "2026-10-13 22:00:00+00:00",
+  "ultima_fecha_omie_disponible_utc": "2026-10-30 22:00:00+00:00",
+  "modelo": "HistGradientBoostingRegressor",
+  "precio_medio_predicho_eur_mwh": 93.935,
+  "estado": "prediccion_generada_pendiente_optimizacion"
+}
