@@ -1,0 +1,9 @@
+{
+  "fecha_consulta": "2026-10-31",
+  "semana_base_inicio": "2026-09-21 00:00:00",
+  "semana_base_fin_exclusivo": "2026-09-28 00:00:00",
+  "vehiculos": 50,
+  "horas_horizonte": 48,
+  "energia_prevista_kwh": 2005.33,
+  "tipo": "escenario_simulado; no son turnos futuros confirmados"
+}
